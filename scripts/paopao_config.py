@@ -32,6 +32,7 @@ ALLOWLIST = {
     "RADAR_SUMMARY_ENABLE": "oi",
     "FUNDING_ALERT_ENABLE": "oi",
     "FLOW_RADAR_ENABLE": "oi",
+    "CONSOLIDATION_BREAKOUT_ENABLE": "oi",
     "ANNOUNCEMENT_RISK_ENABLE": "oi",
 }
 SECRET_KEYS = {
@@ -50,6 +51,7 @@ BOOLEAN_KEYS = {
     "RADAR_SUMMARY_ENABLE",
     "FUNDING_ALERT_ENABLE",
     "FLOW_RADAR_ENABLE",
+    "CONSOLIDATION_BREAKOUT_ENABLE",
     "ANNOUNCEMENT_RISK_ENABLE",
 }
 INTEGER_RANGES: dict[str, tuple[int, int]] = {
@@ -177,6 +179,7 @@ class ConfigManager:
             "RADAR_SUMMARY_ENABLE": "true",
             "FUNDING_ALERT_ENABLE": "true",
             "FLOW_RADAR_ENABLE": "true",
+            "CONSOLIDATION_BREAKOUT_ENABLE": "false",
             "ANNOUNCEMENT_RISK_ENABLE": "true",
         }
         status = {
@@ -486,14 +489,15 @@ class ConfigManager:
             )
 
         radar_switches: dict[str, bool] = {}
-        for key in (
-            "PULSE_RADAR_ENABLE",
-            "RADAR_SUMMARY_ENABLE",
-            "FUNDING_ALERT_ENABLE",
-            "FLOW_RADAR_ENABLE",
-            "ANNOUNCEMENT_RISK_ENABLE",
+        for key, default in (
+            ("PULSE_RADAR_ENABLE", "true"),
+            ("RADAR_SUMMARY_ENABLE", "true"),
+            ("FUNDING_ALERT_ENABLE", "true"),
+            ("FLOW_RADAR_ENABLE", "true"),
+            ("CONSOLIDATION_BREAKOUT_ENABLE", "false"),
+            ("ANNOUNCEMENT_RISK_ENABLE", "true"),
         ):
-            raw_switch = values.get(key, "true").strip().lower()
+            raw_switch = values.get(key, default).strip().lower()
             if raw_switch not in {"true", "false"}:
                 raise ConfigManagerError(f"{key} must be true or false")
             radar_switches[key] = raw_switch == "true"

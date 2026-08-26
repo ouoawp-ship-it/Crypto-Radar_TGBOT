@@ -142,6 +142,45 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(by_symbol["BTCUSDT"]["payload"]["facts"]["price"], 100.5)
         self.assertTrue(by_symbol["BTCUSDT"]["payload"]["facts"]["evaluation_eligible"])
 
+    def test_consolidation_breakout_facts_keep_timeframe_and_box(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_CONSOLIDATION_BREAKOUT",
+                dedup_key="consolidation:BTCUSDT:1d:long:1000",
+                status="sent",
+                sent=True,
+                text="BTCUSDT 日线长期放量确认上破",
+                ts=1000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "event_id": "BTCUSDT:1d:long:strong_breakout_up:1000",
+                    "event": "strong_breakout_up",
+                    "timeframe": "1d",
+                    "horizon": "long",
+                    "box_upper": 101.5,
+                    "box_lower": 88.0,
+                    "box_age": 240,
+                    "width_pct": 14.2,
+                    "volume_ratio": 1.8,
+                    "score": 82,
+                    "event_time": 1000,
+                }],
+            )
+            item = SignalEventStore(
+                settings.signal_events_db_path
+            ).list_signals()["items"][0]
+
+        self.assertEqual(item["module"], "consolidation")
+        self.assertEqual(item["payload"]["facts"]["timeframe"], "1d")
+        self.assertEqual(item["payload"]["facts"]["horizon"], "long")
+        self.assertEqual(item["payload"]["facts"]["box_upper"], 101.5)
+        self.assertEqual(
+            item["payload"]["facts"]["event"],
+            "strong_breakout_up",
+        )
+
     def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)
@@ -218,6 +257,42 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(items[0]["symbol"], "BTCUSDT")
         self.assertEqual(items[0]["score"], 90)
         self.assertEqual(items[0]["message_ids"], [90])
+
+    def test_sent_signal_is_not_downgraded_by_later_dedup_audit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_CONSOLIDATION_BREAKOUT",
+                dedup_key="consolidation:BTCUSDT:1d:long:1000",
+                status="sent",
+                sent=True,
+                text="BTCUSDT 日线长期确认上破",
+                ts=1000,
+                topic_id="77",
+                message_ids=[901],
+                structured_records=[{"symbol": "BTCUSDT"}],
+            )
+            append_from_push(
+                settings,
+                template_id="TG_CONSOLIDATION_BREAKOUT",
+                dedup_key="consolidation:BTCUSDT:1d:long:1000",
+                status="skipped",
+                sent=False,
+                text="BTCUSDT 日线长期确认上破",
+                ts=1100,
+                structured_records=[{"symbol": "BTCUSDT"}],
+            )
+            items = SignalEventStore(
+                settings.signal_events_db_path
+            ).list_signals(limit=10)["items"]
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "sent")
+        self.assertTrue(items[0]["sent"])
+        self.assertEqual(items[0]["ts"], 1000)
+        self.assertEqual(items[0]["topic_id"], "77")
+        self.assertEqual(items[0]["message_ids"], [901])
 
     def test_list_signals_supports_limit_cursor_symbol_and_status(self) -> None:
         with TemporaryDirectory() as tmp:

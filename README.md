@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.0.1` 延续 BOT-only 运行时，并为山寨合约异动雷达补齐默认关闭、可恢复的生产运行与正式 Tag 发布边界。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.1.0` 延续 BOT-only 运行时，并新增默认关闭、独立话题隔离且可恢复的盘整突破雷达。
 
 ## 核心功能
 
@@ -8,6 +8,7 @@
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
+- 盘整突破雷达：默认关闭；扫描 4H、日线、周线的 24/72/240 根冻结箱体，独立推送确认突破、假突破/假跌破、回踩和扫盘。
 - 公告风险：独立解析并推送 Binance 官方上新、下架和活动公告，不参与脉冲雷达分类。
 - 山寨合约异动雷达：P1 生成候选池，P2 在现有唯一 WebSocket 内做多因子确认，Final 提供可恢复的生产运行；生产调度和真实发送均默认关闭。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
@@ -19,7 +20,7 @@
 ## 项目目录
 
 ```text
-radars/   五个生产雷达及默认关闭的山寨合约异动候选/确认模块
+radars/   六个市场雷达及默认关闭的山寨合约异动候选/确认模块
 shared/   Telegram、行情访问、存储等公共能力
 runtime/  调度、健康检查、备份和运维命令
 config/   配置读取、真实配置和配置示例
@@ -28,7 +29,7 @@ scripts/  安装、更新和运维脚本
 tests/    按雷达、公共能力、运行管理和配置分类的测试
 ```
 
-每个主要目录和五个雷达目录内都有中文说明文件；源码不再包在
+每个主要目录和雷达目录内都有中文说明文件；源码不再包在
 `paopao_radar/` 这一层中。
 
 ## 本地运行
@@ -85,6 +86,7 @@ python main.py pulse-review-report --review-days 30 --review-top 10 --json
 python main.py announcement-risk
 python main.py flow-radar
 python main.py funding-alert
+python main.py consolidation-breakout
 python main.py altcoin-anomaly --preview-telegram
 python main.py altcoin-anomaly --realtime-duration-sec 900 --json
 python main.py signal-effectiveness
@@ -96,6 +98,11 @@ python main.py live --send --confirm-real-send
 普通推送不会自动建话题或刷新置顶说明。创建/修复话题必须通过中文菜单或
 `telegram-topic-setup` 明确执行；任一核心雷达缺少专属话题时，真实发送会
 安全阻断，不会退回群主界面。
+
+盘整突破雷达使用独立模板 `TG_CONSOLIDATION_BREAKOUT` 和严格话题路由，升级后
+默认关闭，不会改变现有生产流量。首次启用、创建专属话题、数百日箱体口径、
+假突破状态机和回滚方式见
+[盘整突破雷达说明](docs/CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
 `telegram-topic-refresh` 只刷新已经存在的话题，不会创建新话题；说明版本和
 正文都未变化时不会重复发送。服务器更新脚本只有显式增加
@@ -147,8 +154,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.0.1
-bash scripts/deploy_tag.sh --tag v2.0.1 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.1.0
+bash scripts/deploy_tag.sh --tag v2.1.0 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：
@@ -167,5 +174,6 @@ FinalShell 的 `paopao` / `pp` 中文运维菜单见
 管理员私聊菜单见
 [docs/TELEGRAM_PRIVATE_CONTROL.md](docs/TELEGRAM_PRIVATE_CONTROL.md)。
 私聊菜单可只读查看最近信号、推送记录和中文故障说明；主动故障提醒默认关闭。
-五个雷达可分别经二次确认暂停或恢复自动调度，公共市场快照和主进程不会随单个
+现有五个核心雷达可分别经二次确认暂停或恢复自动调度；盘整突破雷达先通过
+`CONSOLIDATION_BREAKOUT_ENABLE` 独立启用。公共市场快照和主进程不会随单个
 雷达关闭，真实 Telegram 推送门禁也不能由私聊菜单修改。

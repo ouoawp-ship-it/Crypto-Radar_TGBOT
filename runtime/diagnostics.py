@@ -13,6 +13,7 @@ _RUNNING_STATUSES = {
     "summary_failed",
     "announcement_risk_failed",
     "flow_failed",
+    "consolidation_breakout_failed",
     "funding_alert_failed",
     "pulse_failed",
 }
@@ -174,7 +175,7 @@ def build_market_radar_runtime_status(
     *,
     now: float | None = None,
 ) -> dict[str, object]:
-    """Build local-only, credential-free status for the five market radars."""
+    """Build local-only, credential-free status for the market radars."""
 
     current = int(time.time() if now is None else now)
     loaded = store.load(settings.runtime_status_path, {})
@@ -222,6 +223,16 @@ def build_market_radar_runtime_status(
         funding_state.get("last_alert_count")
     )
     funding_scanned = _nonnegative_int(funding_state.get("last_scanned"))
+
+    consolidation_state = _as_mapping(
+        store.load(settings.consolidation_breakout_state_path, {})
+    )
+    consolidation_entries = _as_mapping(
+        consolidation_state.get("tracks")
+    )
+    consolidation_diagnostics = _as_mapping(
+        runtime_diagnostics.get("consolidation_breakout")
+    )
 
     radars = {
         "launch_alert": _radar_state(
@@ -357,6 +368,44 @@ def build_market_radar_runtime_status(
             last_push_status=_safe_push_status(runtime.get("flow_push")),
             candidate_count=flow_candidates,
             scanned_count=flow_selected,
+            real_send=real_send,
+            current_ts=current,
+            schedule_grace_sec=schedule_grace_sec,
+        ),
+        "consolidation_breakout": _radar_state(
+            enabled=bool(
+                settings.consolidation_breakout_enable
+                and not bool(runtime.get("no_consolidation_breakout"))
+            ),
+            disabled_reason=(
+                "disabled_by_config"
+                if not settings.consolidation_breakout_enable
+                else "disabled_by_runtime_flag"
+            ),
+            runtime_active=runtime_active,
+            runtime_status=runtime_status,
+            failure_status="consolidation_breakout_failed",
+            cycle_status=runtime.get(
+                "consolidation_breakout_cycle_status"
+            ),
+            error_code=runtime.get("consolidation_breakout_error_code"),
+            last_run_at=(
+                runtime.get("last_consolidation_breakout_at")
+                or consolidation_state.get("updated_at")
+            ),
+            next_run_at=runtime.get("next_consolidation_breakout_at"),
+            last_push_status=_safe_push_status(
+                runtime.get("consolidation_breakout_push")
+            ),
+            candidate_count=_nonnegative_int(
+                consolidation_diagnostics.get("candidate_count")
+            ),
+            scanned_count=(
+                _nonnegative_int(
+                    consolidation_diagnostics.get("scanned_pairs")
+                )
+                or len(consolidation_entries)
+            ),
             real_send=real_send,
             current_ts=current,
             schedule_grace_sec=schedule_grace_sec,

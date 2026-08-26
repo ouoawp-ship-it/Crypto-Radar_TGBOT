@@ -21,6 +21,10 @@ class PushResultChineseTextTests(unittest.TestCase):
             check_name_text("pulse_kline_budget"),
             "脉冲图表请求余量",
         )
+        self.assertEqual(
+            check_name_text("telegram_topic_consolidation_breakout"),
+            "盘整突破雷达专属话题",
+        )
         self.assertEqual(check_name_text("new_internal_check"), "其他检查项")
 
     def test_all_delivery_statuses_have_plain_chinese_labels(self) -> None:
@@ -47,6 +51,7 @@ class PushResultChineseTextTests(unittest.TestCase):
             "missing_confirm_real_send": "第二重确认",
             "telegram_not_configured": "机器人或群配置不完整",
             "telegram_topic_not_configured": "话题尚未配置",
+            "telegram_topic_invalid": "话题 ID 无效",
             "telegram_api_failed": "接口调用失败",
             "delivery_quarantine": "尚未安全收口",
             "telegram_delivery_uncertain": "停止重试",

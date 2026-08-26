@@ -21,6 +21,7 @@ SIGNAL_STORE_SCHEMA_VERSION = 6
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
+    "consolidation",
     "pulse",
     "launch",
     "announcement",
@@ -146,6 +147,9 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "divergence",
     "evaluation_eligible",
     "module", "template_id",
+    "event_id", "event", "timeframe", "horizon", "box_upper",
+    "box_lower", "box_age", "width_pct", "volume_ratio", "event_time",
+    "breakout_distance_pct", "bars_since_breakout",
 })
 
 
@@ -270,6 +274,8 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 def _module_for_template(template_id: str) -> str:
     value = str(template_id or "").upper()
+    if "CONSOLIDATION" in value:
+        return "consolidation"
     if "FUNDING" in value:
         return "funding"
     if "FLOW" in value:
@@ -650,9 +656,15 @@ class SignalEventStore:
                         :reply_to_message_id, :payload_json, :error, :ingest_mode, :quality_status
                     )
                     ON CONFLICT(dedup_key, symbol) DO UPDATE SET
-                        ts=excluded.ts,
+                        ts=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.ts
+                            ELSE excluded.ts
+                        END,
                         public_ref=excluded.public_ref,
-                        time=excluded.time,
+                        time=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.time
+                            ELSE excluded.time
+                        END,
                         module=excluded.module,
                         template_id=excluded.template_id,
                         signal_type=excluded.signal_type,
@@ -663,13 +675,34 @@ class SignalEventStore:
                         title=excluded.title,
                         excerpt=excluded.excerpt,
                         text_html=excluded.text_html,
-                        status=excluded.status,
-                        sent=excluded.sent,
-                        topic_id=excluded.topic_id,
-                        message_ids_json=excluded.message_ids_json,
-                        reply_to_message_id=excluded.reply_to_message_id,
-                        payload_json=excluded.payload_json,
-                        error=excluded.error,
+                        status=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.status
+                            ELSE excluded.status
+                        END,
+                        sent=CASE
+                            WHEN signals.sent = 1 THEN 1
+                            ELSE excluded.sent
+                        END,
+                        topic_id=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.topic_id
+                            ELSE excluded.topic_id
+                        END,
+                        message_ids_json=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.message_ids_json
+                            ELSE excluded.message_ids_json
+                        END,
+                        reply_to_message_id=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.reply_to_message_id
+                            ELSE excluded.reply_to_message_id
+                        END,
+                        payload_json=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.payload_json
+                            ELSE excluded.payload_json
+                        END,
+                        error=CASE
+                            WHEN signals.sent = 1 AND excluded.sent = 0 THEN signals.error
+                            ELSE excluded.error
+                        END,
                         ingest_mode=excluded.ingest_mode,
                         quality_status=excluded.quality_status
                     """,
