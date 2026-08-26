@@ -98,6 +98,18 @@ paopao telegram-test
 
 缺少某个核心雷达的专属话题时，真实推送会安全阻断，不会发到群主界面。
 
+盘整突破雷达升级后默认关闭。启用前先显式创建它的独立话题：
+
+```bash
+.venv/bin/python main.py telegram-topic-setup \
+  --topic-template TG_CONSOLIDATION_BREAKOUT \
+  --send --confirm-real-send
+```
+
+随后在 `config/.env.oi` 设置 `CONSOLIDATION_BREAKOUT_ENABLE=true`。完整扫描周期、
+240 日箱体和假突破规则见
+[盘整突破雷达说明](CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
+
 ## 更新
 
 ```bash

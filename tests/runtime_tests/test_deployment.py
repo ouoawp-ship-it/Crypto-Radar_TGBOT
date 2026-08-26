@@ -204,6 +204,27 @@ class EnvSyncTests(unittest.TestCase):
                 env.read_text(encoding="utf-8"),
             )
 
+    def test_sync_preserves_consolidation_breakout_topic(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=77\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=\n",
+                encoding="utf-8",
+            )
+
+            module.sync_env(env, example)
+
+            self.assertIn(
+                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=77",
+                env.read_text(encoding="utf-8"),
+            )
+
     def test_sync_migrates_old_launch_switch_to_pulse_and_removes_old_keys(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
@@ -455,6 +476,7 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("database-backup", command_action.choices)
         self.assertIn("pulse-review-report", command_action.choices)
         self.assertIn("telegram-topic-refresh", command_action.choices)
+        self.assertIn("consolidation-breakout", command_action.choices)
 
 
 class PulseReadinessTests(unittest.TestCase):
@@ -547,6 +569,40 @@ class PulseReadinessTests(unittest.TestCase):
             self.assertIn("⏳ 待处理 资金费率警报专属话题", text)
             self.assertIn("资金费率警报专属话题未配置", text)
             self.assertNotIn("telegram_topic_test_message", text)
+
+    def test_consolidation_topic_is_required_only_after_opt_in(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = dict(
+                base_dir=root,
+                data_dir=root,
+                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd",
+                tg_chat_id="-1001234567890",
+                tg_radar_summary_topic_id="11",
+                tg_launch_alert_topic_id="12",
+                tg_announcement_alert_topic_id="14",
+                tg_flow_radar_topic_id="13",
+                tg_funding_alert_topic_id="15",
+                tg_topic_routes_path=root / "topic_routes.json",
+            )
+            store = JsonStore(root)
+
+            with patch.object(main, "runtime_health_checks", return_value=[]):
+                with redirect_stdout(StringIO()) as disabled_output:
+                    disabled = main.print_readiness(Settings(**base), store)
+                with redirect_stdout(StringIO()) as enabled_output:
+                    enabled = main.print_readiness(
+                        Settings(
+                            **base,
+                            consolidation_breakout_enable=True,
+                        ),
+                        store,
+                    )
+
+            self.assertEqual(disabled, 0)
+            self.assertNotIn("盘整突破雷达专属话题", disabled_output.getvalue())
+            self.assertEqual(enabled, 1)
+            self.assertIn("盘整突破雷达专属话题", enabled_output.getvalue())
 
 
 class MainCommandTests(unittest.TestCase):

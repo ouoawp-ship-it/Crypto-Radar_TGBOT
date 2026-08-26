@@ -13,6 +13,15 @@ from runtime.diagnostics import (
 from shared.storage import JsonStore
 
 
+DEFAULT_ENABLED_RADARS = (
+    "launch_alert",
+    "radar_summary",
+    "announcement_risk",
+    "funding_alert",
+    "flow_radar",
+)
+
+
 class MarketRadarRuntimeStatusTests(unittest.TestCase):
     def runtime(self, root: Path) -> tuple[Settings, JsonStore]:
         settings = Settings(
@@ -38,9 +47,13 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
         self.assertFalse(result["network_activity"])
         self.assertEqual(result["telegram_calls"], 0)
         self.assertTrue(all(
-            item["state"] == "not_running"
-            for item in result["radars"].values()
+            result["radars"][name]["state"] == "not_running"
+            for name in DEFAULT_ENABLED_RADARS
         ))
+        self.assertEqual(
+            result["radars"]["consolidation_breakout"]["state"],
+            "disabled",
+        )
 
     def test_five_radars_report_fresh_runtime_and_dry_run_block(self) -> None:
         now = 2_000_000_000
@@ -96,13 +109,18 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["runtime_heartbeat_age_sec"], 10)
-        for item in result["radars"].values():
+        for name in DEFAULT_ENABLED_RADARS:
+            item = result["radars"][name]
             self.assertEqual(item["state"], "running")
             self.assertEqual(item["delivery_mode"], "dry_run")
             self.assertEqual(
                 item["delivery_block_reason"], "main_bot_dry_run"
             )
             self.assertEqual(item["telegram_http_calls"], 0)
+        self.assertEqual(
+            result["radars"]["consolidation_breakout"]["state"],
+            "disabled",
+        )
         self.assertEqual(
             result["radars"]["launch_alert"]["candidate_count"], 3
         )
@@ -146,9 +164,13 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
         self.assertEqual(result["runtime_mode"], "live")
         self.assertEqual(result["delivery_mode"], "real")
         self.assertTrue(all(
-            item["state"] == "running"
-            for item in result["radars"].values()
+            result["radars"][name]["state"] == "running"
+            for name in DEFAULT_ENABLED_RADARS
         ))
+        self.assertEqual(
+            result["radars"]["consolidation_breakout"]["state"],
+            "disabled",
+        )
 
     def test_stale_heartbeat_does_not_claim_running(self) -> None:
         now = 2_000_000_000
@@ -170,9 +192,13 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "stale")
         self.assertFalse(result["runtime_heartbeat_fresh"])
         self.assertTrue(all(
-            item["state"] == "not_running"
-            for item in result["radars"].values()
+            result["radars"][name]["state"] == "not_running"
+            for name in DEFAULT_ENABLED_RADARS
         ))
+        self.assertEqual(
+            result["radars"]["consolidation_breakout"]["state"],
+            "disabled",
+        )
 
     def test_overdue_radar_is_stale_while_loop_heartbeat_is_fresh(self) -> None:
         now = 2_000_000_000

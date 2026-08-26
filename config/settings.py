@@ -121,6 +121,7 @@ class Settings:
     tg_test_topic_id: str = ""
     tg_flow_radar_topic_id: str = ""
     tg_funding_alert_topic_id: str = ""
+    tg_consolidation_breakout_topic_id: str = ""
     tg_altcoin_contract_anomaly_topic_id: str = ""
     tg_private_control_enable: bool = False
     tg_private_control_admin_user_id: str = ""
@@ -326,6 +327,22 @@ class Settings:
     flow_oi_build_min_pct: float = 2.0
     flow_oi_unwind_max_pct: float = -1.5
 
+    # Multi-timeframe consolidation breakout radar.  It is intentionally
+    # disabled by default so an upgrade cannot add traffic or Telegram pushes
+    # to an existing production deployment without an explicit opt-in.
+    consolidation_breakout_enable: bool = False
+    consolidation_breakout_interval_sec: int = 15 * 60
+    consolidation_breakout_close_delay_sec: int = 90
+    consolidation_breakout_scan_limit: int = 24
+    consolidation_breakout_min_quote_volume: float = 5_000_000
+    consolidation_breakout_timeframes: tuple[str, ...] = ("4h", "1d", "1w")
+    consolidation_breakout_strong_volume_ratio: float = 1.20
+    consolidation_breakout_require_strong_volume: bool = False
+    consolidation_breakout_max_signals_per_scan: int = 8
+    consolidation_breakout_state_path: Path = (
+        BASE_DIR / "data" / "consolidation_breakout_state.json"
+    )
+
     funding_alert_enable: bool = True
     funding_alert_interval_sec: int = 180
     funding_alert_scan_limit: int = 120
@@ -485,6 +502,10 @@ class Settings:
             tg_test_topic_id=env_first("TG_TEST_TOPIC_ID", "TELEGRAM_TEST_TOPIC_ID"),
             tg_flow_radar_topic_id=env_first("TG_FLOW_RADAR_TOPIC_ID", "TELEGRAM_FLOW_RADAR_TOPIC_ID"),
             tg_funding_alert_topic_id=env_first("TG_FUNDING_ALERT_TOPIC_ID", "TELEGRAM_FUNDING_ALERT_TOPIC_ID"),
+            tg_consolidation_breakout_topic_id=env_first(
+                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID",
+                "TELEGRAM_CONSOLIDATION_BREAKOUT_TOPIC_ID",
+            ),
             tg_altcoin_contract_anomaly_topic_id=env_first(
                 "TG_ALTCOIN_CONTRACT_ANOMALY_TOPIC_ID",
                 "TELEGRAM_ALTCOIN_CONTRACT_ANOMALY_TOPIC_ID",
@@ -994,6 +1015,58 @@ class Settings:
             flow_price_flat_max_pct=env_float("FLOW_PRICE_FLAT_MAX_PCT", 1.5),
             flow_oi_build_min_pct=env_float("FLOW_OI_BUILD_MIN_PCT", 2.0),
             flow_oi_unwind_max_pct=env_float("FLOW_OI_UNWIND_MAX_PCT", -1.5),
+            consolidation_breakout_enable=reloadable_bool(
+                "CONSOLIDATION_BREAKOUT_ENABLE",
+                False,
+            ),
+            consolidation_breakout_interval_sec=env_bounded_int(
+                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC",
+                15 * 60,
+                60,
+                24 * 3600,
+            ),
+            consolidation_breakout_close_delay_sec=env_bounded_int(
+                "CONSOLIDATION_BREAKOUT_CLOSE_DELAY_SEC",
+                90,
+                0,
+                3600,
+            ),
+            consolidation_breakout_scan_limit=env_bounded_int(
+                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT",
+                24,
+                1,
+                40,
+            ),
+            consolidation_breakout_min_quote_volume=env_float(
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME",
+                5_000_000,
+            ),
+            consolidation_breakout_timeframes=tuple(
+                item.lower()
+                for item in env_csv(
+                    "CONSOLIDATION_BREAKOUT_TIMEFRAMES",
+                    ("4H", "1D", "1W"),
+                )
+            ),
+            consolidation_breakout_strong_volume_ratio=env_float(
+                "CONSOLIDATION_BREAKOUT_STRONG_VOLUME_RATIO",
+                1.20,
+            ),
+            consolidation_breakout_require_strong_volume=env_bool(
+                "CONSOLIDATION_BREAKOUT_REQUIRE_STRONG_VOLUME",
+                False,
+            ),
+            consolidation_breakout_max_signals_per_scan=env_bounded_int(
+                "CONSOLIDATION_BREAKOUT_MAX_SIGNALS_PER_SCAN",
+                8,
+                1,
+                20,
+            ),
+            consolidation_breakout_state_path=data_path(
+                data_dir,
+                "CONSOLIDATION_BREAKOUT_STATE_FILE",
+                "consolidation_breakout_state.json",
+            ),
             funding_alert_enable=reloadable_bool("FUNDING_ALERT_ENABLE", True),
             funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
             funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
@@ -1090,6 +1163,9 @@ class Settings:
                     "test": bool(self.tg_test_topic_id),
                     "flow_radar": bool(self.tg_flow_radar_topic_id),
                     "funding_alert": bool(self.tg_funding_alert_topic_id),
+                    "consolidation_breakout": bool(
+                        self.tg_consolidation_breakout_topic_id
+                    ),
                     "altcoin_contract_anomaly": bool(
                         self.tg_altcoin_contract_anomaly_topic_id
                     ),
@@ -1391,6 +1467,27 @@ class Settings:
                 "price_flat_max_pct": self.flow_price_flat_max_pct,
                 "oi_build_min_pct": self.flow_oi_build_min_pct,
                 "oi_unwind_max_pct": self.flow_oi_unwind_max_pct,
+            },
+            "consolidation_breakout": {
+                "enabled": self.consolidation_breakout_enable,
+                "interval_sec": self.consolidation_breakout_interval_sec,
+                "close_delay_sec": self.consolidation_breakout_close_delay_sec,
+                "scan_limit": self.consolidation_breakout_scan_limit,
+                "min_quote_volume": (
+                    self.consolidation_breakout_min_quote_volume
+                ),
+                "timeframes": list(self.consolidation_breakout_timeframes),
+                "strong_volume_ratio": (
+                    self.consolidation_breakout_strong_volume_ratio
+                ),
+                "require_strong_volume": (
+                    self.consolidation_breakout_require_strong_volume
+                ),
+                "max_signals_per_scan": (
+                    self.consolidation_breakout_max_signals_per_scan
+                ),
+                "state_file": str(self.consolidation_breakout_state_path),
+                "telegram_template": "TG_CONSOLIDATION_BREAKOUT",
             },
             "funding_alert": {
                 "enable": self.funding_alert_enable,

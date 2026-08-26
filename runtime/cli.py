@@ -35,6 +35,7 @@ from config import Settings
 from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
+from radars.consolidation_breakout.radar import ConsolidationBreakoutRadar
 from radars.announcement_risk.radar import AnnouncementRiskRadar
 from .health import lightweight_freshness_checks, runtime_health_checks
 from shared.market_cockpit import persist_flow_market_rows, persist_market_batch
@@ -243,6 +244,17 @@ def telegram_topic_route_checks(
             if configured
             else f"{topic_name}专属话题未配置",
         ))
+    if bool(getattr(settings, "consolidation_breakout_enable", False)):
+        template_id = "TG_CONSOLIDATION_BREAKOUT"
+        configured = gateway.topic_route_configured(template_id)
+        topic_name = TOPIC_TEMPLATE_NAMES[template_id]
+        checks.append((
+            "telegram_topic_consolidation_breakout",
+            configured,
+            f"{topic_name}专属话题已配置"
+            if configured
+            else f"{topic_name}专属话题未配置",
+        ))
     return checks
 
 
@@ -262,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "pulse-review-report", "telegram-test", "telegram-topic-setup", "telegram-topic-refresh", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "pulse-review-report", "telegram-test", "telegram-topic-setup", "telegram-topic-refresh", "private-control", "announcement-risk", "flow-radar", "funding-alert", "consolidation-breakout", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -288,10 +300,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-top", type=int, default=5, help="用于 pulse-review-report：本周涨幅榜数量，默认 5")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
+    parser.add_argument("--consolidation-scan-limit", type=int, default=None, help="临时覆盖盘整突破雷达扫描上限")
     parser.add_argument("--no-pulse", dest="no_launch", action="store_true", help="本轮不运行脉冲雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不运行公告风险雷达")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
+    parser.add_argument("--no-consolidation-breakout", action="store_true", help="本轮不运行盘整突破雷达")
     parser.add_argument("--json", action="store_true", help="为支持的命令输出完整 JSON")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     parser.add_argument(
@@ -333,6 +347,11 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     pulse_scan_limit = getattr(args, "pulse_scan_limit", None)
     flow_scan_limit = getattr(args, "flow_scan_limit", None)
     funding_scan_limit = getattr(args, "funding_scan_limit", None)
+    consolidation_scan_limit = getattr(
+        args,
+        "consolidation_scan_limit",
+        None,
+    )
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if pulse_scan_limit is not None:
@@ -342,6 +361,11 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
     if funding_scan_limit is not None:
         updates["funding_alert_scan_limit"] = max(0, int(funding_scan_limit))
+    if consolidation_scan_limit is not None:
+        updates["consolidation_breakout_scan_limit"] = max(
+            1,
+            int(consolidation_scan_limit),
+        )
     if not updates:
         return settings
     return replace(settings, **updates)
@@ -370,6 +394,12 @@ def effective_radar_switches(
         "flow_radar": bool(
             settings.flow_radar_enable and not bool(args.no_flow)
         ),
+        "consolidation_breakout": bool(
+            settings.consolidation_breakout_enable
+            and not bool(
+                getattr(args, "no_consolidation_breakout", False)
+            )
+        ),
         "announcement_risk": bool(
             settings.announcement_risk_enable
             and not bool(args.no_announcements)
@@ -383,6 +413,9 @@ def radar_runtime_flags(switches: dict[str, bool]) -> dict[str, bool]:
         "no_summary": not switches["radar_summary"],
         "no_funding_alert": not switches["funding_alert"],
         "no_flow": not switches["flow_radar"],
+        "no_consolidation_breakout": not switches[
+            "consolidation_breakout"
+        ],
         "no_announcements": not switches["announcement_risk"],
     }
 
@@ -442,6 +475,7 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.radar_state_path,
         settings.funding_snapshot_path,
         settings.funding_alert_state_path,
+        settings.consolidation_breakout_state_path,
         settings.announcement_state_path,
         settings.data_dir / "simple_alert_state.json",
         settings.data_dir / "review_signals.json",
@@ -644,6 +678,7 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
                 "radar_summary": "TG_RADAR_SUMMARY",
                 "funding_alert": "TG_FUNDING_ALERT",
                 "flow_radar": "TG_FLOW_RADAR",
+                "consolidation_breakout": "TG_CONSOLIDATION_BREAKOUT",
                 "announcement_risk": "TG_ANNOUNCEMENT_ALERT",
             }
             return {
@@ -1231,6 +1266,88 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     return push.status, flow["diagnostics"]
 
 
+def run_consolidation_breakout(args: argparse.Namespace) -> int:
+    settings, _store, _engine, _gateway = make_runtime_for_args(args)
+    # An explicit one-shot command is an operator-requested scan.  The feature
+    # switch controls only automatic scheduling, so dry-run validation remains
+    # possible before enabling the daemon path.
+    if not settings.consolidation_breakout_enable:
+        settings = replace(settings, consolidation_breakout_enable=True)
+    store = JsonStore(settings.data_dir)
+    gateway = TelegramGateway(settings, store)
+    push_status, diagnostics = push_consolidation_breakout(
+        settings,
+        store,
+        gateway,
+        args,
+    )
+    print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
+    return 1 if push_status in {"failed", "partial"} else 0
+
+
+def push_consolidation_breakout(
+    settings: Settings,
+    store: JsonStore,
+    gateway: TelegramGateway,
+    args: argparse.Namespace,
+) -> tuple[str, dict[str, object]]:
+    radar = ConsolidationBreakoutRadar(settings, store)
+    with BinanceDataSource(settings) as source:
+        result = radar.build(source)
+
+    accepted_event_ids: set[str] = set()
+    push_results: list[dict[str, object]] = []
+    for index, event in enumerate(result.get("events") or [], start=1):
+        event_id = str(event.get("event_id") or "")
+        push = gateway.send(
+            str(event.get("text") or ""),
+            str(result.get("template_id") or "TG_CONSOLIDATION_BREAKOUT"),
+            str(event.get("dedup_key") or event_id),
+            send=args.send,
+            confirm_real_send=args.confirm_real_send,
+            cooldown_sec=7 * 86400,
+            parse_mode="HTML",
+            signal_records=[event],
+            enrich_market_context=False,
+        )
+        print(format_push_result_cn(
+            "盘整突破雷达推送",
+            push.status,
+            push.reason,
+            index=index,
+        ))
+        push_results.append({
+            "event_id": event_id,
+            "status": push.status,
+            "reason": push.reason,
+        })
+        if push.status == "sent" or (
+            push.status == "skipped" and push.reason == "dedup_cooldown"
+        ):
+            accepted_event_ids.add(event_id)
+
+    committed = radar.commit(result, accepted_event_ids)
+    diagnostics = dict(result.get("diagnostics") or {})
+    diagnostics["delivery"] = {
+        "events": len(result.get("events") or []),
+        "accepted": len(accepted_event_ids),
+        "state_updates_committed": committed,
+        "pushes": push_results,
+    }
+    statuses = {str(item.get("status") or "") for item in push_results}
+    if statuses & {"failed", "partial"}:
+        overall = "failed"
+    elif "blocked" in statuses:
+        overall = "blocked"
+    elif "sent" in statuses:
+        overall = "sent"
+    elif "dry_run" in statuses:
+        overall = "dry_run"
+    else:
+        overall = "skipped"
+    return overall, diagnostics
+
+
 def run_funding_alert(args: argparse.Namespace) -> int:
     settings, store, _engine, gateway = make_runtime_for_args(args)
     push_status, diagnostics = push_funding_alert(settings, store, gateway, args)
@@ -1424,6 +1541,10 @@ def run_once(
     refresh_effectiveness: bool = True,
 ) -> int:
     settings, store, engine, gateway = make_runtime_for_args(args)
+    consolidation_enabled = bool(
+        settings.consolidation_breakout_enable
+        and not bool(getattr(args, "no_consolidation_breakout", False))
+    )
     mode = command_mode(args)
     runtime_task = (
         "loop" if mode in {"loop", "daemon", "live"} else "once"
@@ -1441,10 +1562,14 @@ def run_once(
         no_funding_alert=bool(
             getattr(args, "no_funding_alert", False)
         ),
+        no_consolidation_breakout=not consolidation_enabled,
         radar_scan_limit=settings.radar_scan_limit,
         pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
         pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
+        consolidation_breakout_scan_limit=(
+            settings.consolidation_breakout_scan_limit
+        ),
     )
     result = engine.run_once(
         include_announcements=not args.no_announcements,
@@ -1497,6 +1622,12 @@ def run_once(
     if not getattr(args, "no_funding_alert", False):
         funding_alert_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
         diagnostics["funding_alert"] = funding_diag
+    consolidation_push_status = "skipped"
+    if consolidation_enabled:
+        consolidation_push_status, consolidation_diag = (
+            push_consolidation_breakout(settings, store, gateway, args)
+        )
+        diagnostics["consolidation_breakout"] = consolidation_diag
     if refresh_effectiveness:
         try:
             diagnostics["signal_effectiveness"] = refresh_signal_effectiveness(settings)
@@ -1520,6 +1651,9 @@ def run_once(
         "pulse_divergence_scan_limit": settings.pulse_divergence_scan_limit,
         "flow_scan_limit": settings.flow_scan_limit,
         "funding_alert_scan_limit": settings.funding_alert_scan_limit,
+        "consolidation_breakout_scan_limit": (
+            settings.consolidation_breakout_scan_limit
+        ),
         "last_error": "",
         "announcement_evidence": result.get("announcement_evidence", {}),
         "announcement_risk_push": announcement_push_status,
@@ -1549,6 +1683,12 @@ def run_once(
         )
         runtime_details["funding_alert_cycle_status"] = "ok"
         runtime_details["funding_alert_error_code"] = ""
+    if consolidation_enabled:
+        runtime_details["consolidation_breakout_push"] = (
+            consolidation_push_status
+        )
+        runtime_details["consolidation_breakout_cycle_status"] = "ok"
+        runtime_details["consolidation_breakout_error_code"] = ""
     write_runtime_status(
         settings,
         store,
@@ -1589,6 +1729,11 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=settings.flow_interval_sec,
         delay_sec=settings.flow_close_delay_sec,
     )
+    next_consolidation_breakout = next_closed_window_epoch(
+        time.time(),
+        interval_sec=settings.consolidation_breakout_interval_sec,
+        delay_sec=settings.consolidation_breakout_close_delay_sec,
+    )
     next_funding_alert = time.time()
     heartbeat_interval_sec = max(
         5,
@@ -1605,12 +1750,19 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=summary_interval,
         pulse_interval_sec=15 * 60,
         flow_interval_sec=max(60, settings.flow_interval_sec),
+        consolidation_breakout_interval_sec=max(
+            60,
+            settings.consolidation_breakout_interval_sec,
+        ),
         funding_alert_interval_sec=max(60, settings.funding_alert_interval_sec),
         summary_close_delay_sec=settings.radar_summary_close_delay_sec,
         flow_close_delay_sec=settings.flow_close_delay_sec,
         next_summary_at=timestamp_from_epoch(next_summary),
         next_announcement_at=timestamp_from_epoch(next_announcement),
         next_flow_at=timestamp_from_epoch(next_flow),
+        next_consolidation_breakout_at=timestamp_from_epoch(
+            next_consolidation_breakout
+        ),
         next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
         next_launch_at="",
         next_market_snapshot_at="",
@@ -1619,6 +1771,9 @@ def run_loop(args: argparse.Namespace) -> int:
         pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
         pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
+        consolidation_breakout_scan_limit=(
+            settings.consolidation_breakout_scan_limit
+        ),
         funding_alert_scan_limit=settings.funding_alert_scan_limit,
         last_error="",
     )
@@ -1860,6 +2015,97 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_cycle_status="ok" if flow_ok else "failed",
                 flow_error_code=flow_error_code,
                 diagnostics={"flow": flow_diag},
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if (
+            not switches["consolidation_breakout"]
+            and now >= next_consolidation_breakout
+        ):
+            next_consolidation_breakout = next_closed_window_epoch(
+                time.time(),
+                interval_sec=settings.consolidation_breakout_interval_sec,
+                delay_sec=settings.consolidation_breakout_close_delay_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                "running",
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                next_consolidation_breakout_at=timestamp_from_epoch(
+                    next_consolidation_breakout
+                ),
+                settings_reload_error=settings_reload_error,
+                **runtime_flags,
+                last_error="",
+            )
+        if (
+            switches["consolidation_breakout"]
+            and now >= next_consolidation_breakout
+        ):
+            consolidation_ok = True
+            consolidation_error_code = ""
+            consolidation_diag: dict[str, object] = {}
+            consolidation_push_status = "skipped"
+            try:
+                store, _engine, gateway = make_runtime_from_settings(settings)
+                (
+                    consolidation_push_status,
+                    consolidation_diag,
+                ) = push_consolidation_breakout(
+                    settings,
+                    store,
+                    gateway,
+                    args,
+                )
+                print(json.dumps(
+                    {"consolidation_breakout": consolidation_diag},
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            except Exception as exc:
+                consolidation_ok = False
+                consolidation_error_code = type(exc).__name__
+                print(
+                    "[loop] consolidation breakout failed: "
+                    f"{consolidation_error_code}",
+                    file=sys.stderr,
+                )
+            next_consolidation_breakout = next_closed_window_epoch(
+                time.time(),
+                interval_sec=settings.consolidation_breakout_interval_sec,
+                delay_sec=settings.consolidation_breakout_close_delay_sec,
+            )
+            write_runtime_status(
+                settings,
+                store,
+                mode,
+                (
+                    "running"
+                    if consolidation_ok
+                    else "consolidation_breakout_failed"
+                ),
+                task="loop",
+                real_send=bool(args.send and args.confirm_real_send),
+                last_consolidation_breakout_at=timestamp_from_epoch(
+                    time.time()
+                ),
+                next_consolidation_breakout_at=timestamp_from_epoch(
+                    next_consolidation_breakout
+                ),
+                consolidation_breakout_push=consolidation_push_status,
+                consolidation_breakout_cycle_status=(
+                    "ok" if consolidation_ok else "failed"
+                ),
+                consolidation_breakout_error_code=(
+                    consolidation_error_code
+                ),
+                diagnostics={
+                    "consolidation_breakout": consolidation_diag
+                },
                 settings_reload_error=settings_reload_error,
                 **runtime_flags,
                 last_error="",
@@ -2132,6 +2378,12 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_funding_alert(args)
+    if args.command == "consolidation-breakout":
+        if args.send and args.confirm_real_send:
+            gate = require_real_send_gate(settings, store, args)
+            if gate != 0:
+                return gate
+        return run_consolidation_breakout(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

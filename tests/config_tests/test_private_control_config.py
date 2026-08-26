@@ -27,6 +27,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
         self.assertTrue(settings.funding_alert_enable)
         self.assertTrue(settings.flow_radar_enable)
         self.assertTrue(settings.announcement_risk_enable)
+        self.assertFalse(settings.consolidation_breakout_enable)
 
     def test_loads_enabled_private_control_without_exposing_admin(self) -> None:
         values = {
@@ -56,6 +57,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
             "FUNDING_ALERT_ENABLE": "false",
             "FLOW_RADAR_ENABLE": "false",
             "ANNOUNCEMENT_RISK_ENABLE": "false",
+            "CONSOLIDATION_BREAKOUT_ENABLE": "true",
             "TG_PRIVATE_CONTROL_ALERT_ENABLE": "true",
             "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "7200",
         }
@@ -72,6 +74,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
         self.assertFalse(settings.funding_alert_enable)
         self.assertFalse(settings.flow_radar_enable)
         self.assertFalse(settings.announcement_risk_enable)
+        self.assertTrue(settings.consolidation_breakout_enable)
         self.assertTrue(settings.tg_private_control_alert_enable)
         self.assertEqual(settings.tg_private_control_alert_cooldown_sec, 7200)
 
@@ -116,6 +119,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["FUNDING_ALERT_ENABLE"])
         self.assertTrue(status["FLOW_RADAR_ENABLE"])
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
+        self.assertFalse(status["CONSOLIDATION_BREAKOUT_ENABLE"])
 
     def test_admin_status_marks_invalid_value_without_exposing_it(self) -> None:
         invalid = "not-a-private-admin"
@@ -222,13 +226,14 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
                     value,
                 )
 
-    def test_five_radar_switches_are_atomic_allowlisted_booleans(self) -> None:
+    def test_radar_switches_are_atomic_allowlisted_booleans(self) -> None:
         keys = (
             "PULSE_RADAR_ENABLE",
             "RADAR_SUMMARY_ENABLE",
             "FUNDING_ALERT_ENABLE",
             "FLOW_RADAR_ENABLE",
             "ANNOUNCEMENT_RISK_ENABLE",
+            "CONSOLIDATION_BREAKOUT_ENABLE",
         )
         for key in keys:
             with self.subTest(key=key):

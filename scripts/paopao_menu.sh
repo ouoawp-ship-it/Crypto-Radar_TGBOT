@@ -404,6 +404,7 @@ telegram_topic_setup_menu() {
 4. 测试消息
 5. 资金流雷达
 6. 资金费率警报
+7. 盘整突破雷达
 0. 返回
 EOF
     IFS= read -r choice
@@ -414,6 +415,7 @@ EOF
       4) template="TG_TEST_MESSAGE" ;;
       5) template="TG_FLOW_RADAR" ;;
       6) template="TG_FUNDING_ALERT" ;;
+      7) template="TG_CONSOLIDATION_BREAKOUT" ;;
       0) return ;;
       *) printf '无效选项。\n'; continue ;;
     esac
