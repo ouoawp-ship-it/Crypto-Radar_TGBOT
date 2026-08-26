@@ -231,6 +231,11 @@ LEGACY_ALIASES = {
 }
 
 MANAGED_MIGRATIONS = {
+    "SIMPLE_ALERT_MIN_QUOTE_VOLUME": {
+        "old": {"", "5000000", "5000000.0"},
+        "new": "1000000",
+        "note": "脉冲雷达旧 500 万美元默认值迁移为 100 万美元低流动性覆盖下限",
+    },
     "SIMPLE_ALERT_SCAN_LIMIT": {
         "old": {"", "80", "120"},
         "new": "0",
