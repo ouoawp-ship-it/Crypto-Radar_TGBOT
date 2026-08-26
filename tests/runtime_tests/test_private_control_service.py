@@ -38,6 +38,7 @@ class PrivateControlRunnerTests(unittest.TestCase):
             (root / "main.py").write_text("", encoding="utf-8")
             env = os.environ.copy()
             for key in (
+                "PYTHON_BIN",
                 "TG_PRIVATE_CONTROL_ENABLE",
                 "TG_PRIVATE_CONTROL_ADMIN_USER_ID",
                 "TG_BOT_TOKEN",
@@ -85,6 +86,17 @@ class PrivateControlRunnerTests(unittest.TestCase):
         self.assertNotIn("123456789", serialized)
         self.assertNotIn("fake-token", serialized)
         self.assertNotIn("--send", serialized)
+
+    def test_runner_test_isolated_from_installer_python_override(self) -> None:
+        with patch.dict(os.environ, {"PYTHON_BIN": "python3"}, clear=False):
+            result, arguments = self._run(
+                TG_PRIVATE_CONTROL_ENABLE="true",
+                TG_PRIVATE_CONTROL_ADMIN_USER_ID="123456789",
+                TG_BOT_TOKEN="123456:fake-token",
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(arguments[1:], ["private-control"])
 
 
 class PrivateControlUnitTests(unittest.TestCase):
