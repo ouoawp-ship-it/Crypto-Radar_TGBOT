@@ -19,11 +19,27 @@ from radars.pulse.divergence import (
 from radars.pulse.radar import PulseRadar
 from radars.pulse.simple_alert import (
     TEMPLATE_ID as SIMPLE_TEMPLATE_ID,
+    PulseCandidate,
     SimpleAlertConfig,
     _candidate_pool,
     run_cycle,
 )
+from shared.binance_data import RequestBudget
 from shared.storage import JsonStore
+
+
+def _test_candidate(symbol: str = "ABCUSDT") -> PulseCandidate:
+    return PulseCandidate(
+        symbol=symbol,
+        base=symbol.removesuffix("USDT"),
+        quote_volume_24h=25_000_000.0,
+        price_change_24h=1.0,
+        market_cap=100_000_000.0,
+        market_cap_source="Binance市场资料",
+        market_cap_tier="medium",
+        liquidity_tier="high",
+        classification={"asset_family": "crypto"},
+    )
 
 
 class PulseRegressionTests(unittest.TestCase):
@@ -34,6 +50,25 @@ class PulseRegressionTests(unittest.TestCase):
     def test_candidate_pool_reserves_rotation_slots(self) -> None:
         class Source:
             settings = Settings(excluded_base_assets=())
+
+            @staticmethod
+            def exchange_info() -> dict[str, object]:
+                return {
+                    "symbols": [
+                        {
+                            "symbol": f"{symbol}USDT",
+                            "baseAsset": symbol,
+                            "quoteAsset": "USDT",
+                            "status": "TRADING",
+                            "contractType": "PERPETUAL",
+                            "underlyingType": "COIN",
+                        }
+                        for symbol in (
+                            "AAA", "BBB", "CCC", "DDD",
+                            "EEE", "FFF", "GGG", "HHH",
+                        )
+                    ]
+                }
 
             @staticmethod
             def ticker_24h() -> list[dict[str, str]]:
@@ -47,7 +82,7 @@ class PulseRegressionTests(unittest.TestCase):
                     for index, symbol in enumerate(symbols)
                 ]
 
-        selected = _candidate_pool(
+        selected, diagnostics = _candidate_pool(
             Source(),  # type: ignore[arg-type]
             SimpleAlertConfig(
                 fixed_top=2,
@@ -59,11 +94,69 @@ class PulseRegressionTests(unittest.TestCase):
             window_index=1,
         )
 
-        self.assertEqual(selected[:2], ["AAAUSDT", "BBBUSDT"])
+        selected_symbols = [candidate.symbol for candidate in selected]
+        self.assertEqual(selected_symbols[:2], ["AAAUSDT", "BBBUSDT"])
         self.assertEqual(
-            len({"FFFUSDT", "GGGUSDT", "HHHUSDT"} & set(selected)),
+            len({"FFFUSDT", "GGGUSDT", "HHHUSDT"} & set(selected_symbols)),
             2,
         )
+        self.assertFalse(diagnostics["full_coverage"])
+
+    def test_candidate_pool_excludes_tradfi_stable_and_unknown_but_scans_all_crypto(self) -> None:
+        class Source:
+            settings = Settings(excluded_base_assets=())
+
+            @staticmethod
+            def exchange_info() -> dict[str, object]:
+                return {"symbols": [
+                    {
+                        "symbol": "BTCUSDT", "baseAsset": "BTC",
+                        "quoteAsset": "USDT", "status": "TRADING",
+                        "contractType": "PERPETUAL", "underlyingType": "COIN",
+                    },
+                    {
+                        "symbol": "MRNAUSDT", "baseAsset": "MRNA",
+                        "quoteAsset": "USDT", "status": "TRADING",
+                        "contractType": "TRADIFI_PERPETUAL", "underlyingType": "EQUITY",
+                    },
+                    {
+                        "symbol": "USDCUSDT", "baseAsset": "USDC",
+                        "quoteAsset": "USDT", "status": "TRADING",
+                        "contractType": "PERPETUAL", "underlyingType": "COIN",
+                    },
+                    {
+                        "symbol": "MYSTERYUSDT", "baseAsset": "MYSTERY",
+                        "quoteAsset": "USDT", "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                    },
+                ]}
+
+            @staticmethod
+            def ticker_24h() -> list[dict[str, str]]:
+                return [
+                    {
+                        "symbol": symbol,
+                        "quoteVolume": "25000000",
+                        "priceChangePercent": "1",
+                    }
+                    for symbol in (
+                        "BTCUSDT", "MRNAUSDT", "USDCUSDT", "MYSTERYUSDT"
+                    )
+                ]
+
+        selected, diagnostics = _candidate_pool(
+            Source(),  # type: ignore[arg-type]
+            SimpleAlertConfig(),
+            limit=0,
+            window_index=1,
+            market_caps={"BTC": 1_000_000_000_000.0},
+        )
+
+        self.assertEqual([candidate.symbol for candidate in selected], ["BTCUSDT"])
+        self.assertEqual(diagnostics["rejected"]["non_crypto_contract_type"], 1)
+        self.assertEqual(diagnostics["rejected"]["stablecoin"], 1)
+        self.assertEqual(diagnostics["rejected"]["unknown_asset"], 1)
+        self.assertTrue(diagnostics["full_coverage"])
 
     def test_dry_run_does_not_create_follow_state(self) -> None:
         class Source:
@@ -106,7 +199,10 @@ class PulseRegressionTests(unittest.TestCase):
             cfg = SimpleAlertConfig(state_path=root / "pulse_state.json")
             with (
                 patch("radars.pulse.simple_alert.BinanceDataSource", Source),
-                patch("radars.pulse.simple_alert._candidate_pool", return_value=["ABCUSDT"]),
+                patch(
+                    "radars.pulse.simple_alert._candidate_pool",
+                    return_value=([_test_candidate()], {"full_coverage": True}),
+                ),
                 patch("radars.pulse.simple_alert._analyze_symbol", return_value=item),
                 patch("radars.pulse.simple_alert._long_short_ratio", return_value=None),
                 patch("radars.pulse.simple_alert._format_card", return_value="pulse"),
@@ -169,7 +265,10 @@ class PulseRegressionTests(unittest.TestCase):
             cfg = SimpleAlertConfig(state_path=root / "pulse_state.json")
             with (
                 patch("radars.pulse.simple_alert.BinanceDataSource", Source),
-                patch("radars.pulse.simple_alert._candidate_pool", return_value=["ABCUSDT"]),
+                patch(
+                    "radars.pulse.simple_alert._candidate_pool",
+                    return_value=([_test_candidate()], {"full_coverage": True}),
+                ),
                 patch("radars.pulse.simple_alert._analyze_symbol", return_value=item),
                 patch("radars.pulse.simple_alert._long_short_ratio", return_value=None),
                 patch("radars.pulse.simple_alert._format_card", return_value="pulse"),
@@ -188,8 +287,107 @@ class PulseRegressionTests(unittest.TestCase):
         self.assertEqual(len(Gateway.calls), 1)
         self.assertEqual(Gateway.calls[0]["photo"], chart)
 
+    def test_full_mode_analyzes_every_candidate_once_and_reserves_chart_budget(self) -> None:
+        class Source:
+            instance = None
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.budget = RequestBudget({
+                    "open_interest_hist": 1,
+                    "klines": 1,
+                    "spot_klines": 1,
+                })
+                Source.instance = self
+
+            @staticmethod
+            def market_caps() -> dict[str, float]:
+                return {}
+
+            @staticmethod
+            def coinpaprika_market_caps() -> dict[str, float]:
+                return {}
+
+            def diagnostics(self) -> dict[str, object]:
+                return {"budget": self.budget.snapshot()}
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        candidates = [_test_candidate(f"{name}USDT") for name in ("AAA", "BBB", "CCC")]
+        calls: list[str] = []
+
+        def analyze(_source, candidate, _window_end_ms, _cfg):
+            calls.append(candidate.symbol)
+            return {
+                "symbol": candidate.symbol,
+                "base": candidate.base,
+                "template": None,
+            }
+
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                oi_hist_budget=1,
+                kline_budget=1,
+            )
+            with (
+                patch("radars.pulse.simple_alert.BinanceDataSource", Source),
+                patch(
+                    "radars.pulse.simple_alert._candidate_pool",
+                    return_value=(candidates, {"full_coverage": True}),
+                ),
+                patch(
+                    "radars.pulse.simple_alert._analyze_symbol",
+                    side_effect=analyze,
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                diagnostics = run_cycle(
+                    settings,
+                    SimpleNamespace(),  # type: ignore[arg-type]
+                    SimpleAlertConfig(scan_limit=0, scan_workers=3),
+                    send=False,
+                    confirm_real_send=False,
+                    now_ts=1000,
+                )
+
+        self.assertCountEqual(calls, ["AAAUSDT", "BBBUSDT", "CCCUSDT"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(diagnostics["scan_mode"], "all_eligible_crypto")
+        self.assertEqual(diagnostics["coverage_status"], "complete")
+        assert Source.instance is not None
+        self.assertEqual(Source.instance.budget.limits["open_interest_hist"], 43)
+        self.assertEqual(Source.instance.budget.limits["klines"], 43)
+        self.assertEqual(Source.instance.budget.limits["spot_klines"], 3)
+
     def test_divergence_analyzes_each_candidate_once(self) -> None:
         class MainSource:
+            @staticmethod
+            def exchange_info() -> dict[str, object]:
+                crypto = [
+                    {
+                        "symbol": f"{symbol}USDT",
+                        "baseAsset": symbol,
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "underlyingType": "COIN",
+                    }
+                    for symbol in ("AAA", "BBB", "CCC")
+                ]
+                return {"symbols": [
+                    *crypto,
+                    {
+                        "symbol": "MRNAUSDT",
+                        "baseAsset": "MRNA",
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                        "contractType": "TRADIFI_PERPETUAL",
+                        "underlyingType": "EQUITY",
+                    },
+                ]}
+
             @staticmethod
             def ticker_24h() -> list[dict[str, str]]:
                 return [
@@ -197,7 +395,7 @@ class PulseRegressionTests(unittest.TestCase):
                         "symbol": f"{symbol}USDT",
                         "quoteVolume": "10000000",
                     }
-                    for symbol in ("AAA", "BBB", "CCC")
+                    for symbol in ("AAA", "BBB", "CCC", "MRNA")
                 ]
 
         class WorkerSource:

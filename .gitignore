@@ -47,6 +47,7 @@ data/**/*.txt
 !data/数据文件说明.txt
 data/charts/
 data/backups/
+/binance_coordination.db*
 # Bounded runtime history for opt-in accumulation quality diagnostics.
 /data/accumulation_quality_diagnostics.json
 # Historical chain-radar data stays archived on deployed hosts after the

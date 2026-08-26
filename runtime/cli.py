@@ -295,7 +295,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--interval", default=None, help="loop/daemon 的资金雷达摘要间隔秒数")
     parser.add_argument("--radar-scan-limit", type=int, default=None, help="临时覆盖资金雷达扫描上限")
-    parser.add_argument("--pulse-scan-limit", dest="pulse_scan_limit", type=int, default=None, help="临时覆盖脉冲雷达扫描上限")
+    parser.add_argument(
+        "--pulse-scan-limit",
+        dest="pulse_scan_limit",
+        type=int,
+        default=None,
+        help="临时覆盖脉冲雷达扫描上限；0表示全部合格加密合约",
+    )
     parser.add_argument("--review-days", type=int, default=7, help="用于 pulse-review-report：统计最近天数，默认 7 天")
     parser.add_argument("--review-top", type=int, default=5, help="用于 pulse-review-report：本周涨幅榜数量，默认 5")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
@@ -355,7 +361,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if pulse_scan_limit is not None:
-        updates["pulse_simple_scan_limit"] = max(1, int(pulse_scan_limit))
+        updates["pulse_simple_scan_limit"] = max(0, int(pulse_scan_limit))
         updates["pulse_divergence_scan_limit"] = max(1, int(pulse_scan_limit))
     if flow_scan_limit is not None:
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
@@ -1403,8 +1409,10 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         if item.get("status") == "fail"
     ]
     pulse_simple_scan_limit = int(settings.pulse_simple_scan_limit)
-    pulse_kline_required = (
-        pulse_simple_scan_limit + PULSE_CHART_KLINE_RESERVE
+    pulse_scan_text = (
+        "全部合格加密合约"
+        if pulse_simple_scan_limit == 0
+        else str(pulse_simple_scan_limit)
     )
     blocking_checks = [
         *telegram_config_checks(settings),
@@ -1429,21 +1437,22 @@ def print_readiness(settings: Settings, store: JsonStore) -> int:
         (
             "pulse_scan_limit",
             (
-                int(settings.pulse_simple_scan_limit) > 0
+                int(settings.pulse_simple_scan_limit) >= 0
                 and int(settings.pulse_divergence_scan_limit) > 0
             ),
             (
-                f"脉冲扫描上限 15m={int(settings.pulse_simple_scan_limit)}，"
+                f"脉冲扫描范围 15m={pulse_scan_text}，"
                 f"2h={int(settings.pulse_divergence_scan_limit)}"
             ),
         ),
         (
             "pulse_kline_budget",
-            int(settings.kline_budget) >= pulse_kline_required,
+            bool(settings.binance_global_rate_limit_enable),
             (
-                f"K线请求预算 {int(settings.kline_budget)}；"
-                f"15m扫描 {pulse_simple_scan_limit} + "
-                f"图表预留 {PULSE_CHART_KLINE_RESERVE} = {pulse_kline_required}"
+                "细算预算按本轮合格合约动态分配；"
+                f"触发图表额外预留 {PULSE_CHART_KLINE_RESERVE} 次；"
+                "跨服务全局限流"
+                f"{'已启用' if settings.binance_global_rate_limit_enable else '未启用'}"
             ),
         ),
     ]

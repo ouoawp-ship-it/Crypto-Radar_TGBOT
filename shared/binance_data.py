@@ -5,13 +5,18 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from math import ceil, isfinite
+from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import urlencode
 
 import requests
 
 from config import Settings
+from shared.binance_coordination import (
+    GlobalBinanceCoordinator,
+    is_shareable_public_market_url,
+)
 
 
 HTTP_HEADERS = {
@@ -23,6 +28,24 @@ HTTP_HEADERS = {
     "Accept": "application/json",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+
+
+def _header_seconds(
+    headers: Mapping[str, Any] | None,
+    name: str,
+) -> float | None:
+    if not isinstance(headers, Mapping):
+        return None
+    wanted = str(name).lower()
+    for key, value in headers.items():
+        if str(key).lower() != wanted:
+            continue
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return None
+        return seconds if isfinite(seconds) and seconds > 0 else None
+    return None
 
 
 @dataclass
@@ -52,6 +75,16 @@ class RequestBudget:
                 }
                 for key in keys
             }
+
+    def ensure_limit(self, key: str, minimum: int) -> int:
+        """Raise one local safety budget without resetting already-used requests."""
+
+        with self._lock:
+            self.limits[key] = max(
+                int(self.limits.get(key, 0)),
+                max(0, int(minimum)),
+            )
+            return self.limits[key]
 
 
 @dataclass
@@ -290,6 +323,20 @@ class HttpClient:
         self._cache_expired_pruned = 0
         self.fuse_until: dict[str, float] = {}
         self._state_lock = RLock()
+        self.coordinator = GlobalBinanceCoordinator(
+            Path(settings.binance_coordination_db_path),
+            limiter_enabled=bool(settings.binance_global_rate_limit_enable),
+            shared_cache_enabled=bool(settings.binance_shared_cache_enable),
+            futures_weight_per_minute=int(
+                settings.binance_futures_weight_per_minute
+            ),
+            spot_weight_per_minute=int(settings.binance_spot_weight_per_minute),
+            futures_data_requests_per_5m=int(
+                settings.binance_futures_data_requests_per_5m
+            ),
+            max_wait_sec=float(settings.binance_global_rate_limit_max_wait_sec),
+            cache_max_entries=max(512, self.cache_max_entries),
+        )
 
     def close(self) -> None:
         with self._state_lock:
@@ -335,15 +382,33 @@ class HttpClient:
 
         key = cache_key or self._cache_key(url, params)
         use_cache = bool(self.settings.http_cache_enable and cache)
+        cached_value: Any = None
+        cache_hit = False
         if use_cache:
             with self._state_lock:
                 self._prune_cache_locked(now)
                 cached = self.cache.get(key)
                 if cached is not None:
                     self.cache.move_to_end(key)
-            self.metrics.record_cache(source_id, hit=cached is not None)
-            if cached is not None:
-                return cached[1]
+                    cached_value = cached[1]
+                    cache_hit = True
+            if (
+                not cache_hit
+                and not headers
+                and is_shareable_public_market_url(url)
+            ):
+                shared = self.coordinator.cache_get(
+                    key,
+                    self._shared_cache_ttl(quality_key),
+                )
+                if shared is not None:
+                    cached_value = shared
+                    cache_hit = True
+                    with self._state_lock:
+                        self._store_memory_cache_locked(key, shared)
+            self.metrics.record_cache(source_id, hit=cache_hit)
+            if cache_hit:
+                return cached_value
 
         retry_count = self.settings.http_retry if retries is None else retries
         timeout_sec = self.settings.http_timeout_sec if timeout is None else timeout
@@ -351,10 +416,20 @@ class HttpClient:
         started_at = time.perf_counter()
         for attempt in range(1, retry_count + 1):
             try:
+                if not self.coordinator.acquire(url, params):
+                    last_reason = "global_rate_limited"
+                    self.metrics.record_skip(source_id, last_reason)
+                    break
                 request_headers = dict(HTTP_HEADERS)
                 if headers:
                     request_headers.update(headers)
                 response = self.session.get(url, params=params, headers=request_headers, timeout=timeout_sec)
+                response_headers = (
+                    response.headers
+                    if isinstance(getattr(response, "headers", None), Mapping)
+                    else None
+                )
+                self.coordinator.observe_response(url, params, response_headers)
                 if response.status_code == 200:
                     data = response.json()
                     business_error = ""
@@ -368,13 +443,14 @@ class HttpClient:
                         break
                     with self._state_lock:
                         if use_cache:
-                            self._prune_cache_locked(time.time())
-                            self.cache.pop(key, None)
-                            while len(self.cache) >= self.cache_max_entries:
-                                self.cache.popitem(last=False)
-                                self._cache_evictions += 1
-                            self.cache[key] = (time.time(), data)
+                            self._store_memory_cache_locked(key, data)
                         self.quality.ok(quality_key)
+                    if (
+                        use_cache
+                        and not headers
+                        and is_shareable_public_market_url(url)
+                    ):
+                        self.coordinator.cache_put(key, data)
                     self.metrics.record_network(
                         source_id,
                         success=True,
@@ -383,6 +459,12 @@ class HttpClient:
                     return data
                 last_reason = f"status={response.status_code}"
                 if response.status_code in {403, 418, 429}:
+                    retry_after = _header_seconds(response_headers, "retry-after")
+                    self.coordinator.block(
+                        url,
+                        params,
+                        retry_after or min(60, int(self.settings.fuse_seconds)),
+                    )
                     with self._state_lock:
                         self.fuse_until[fuse_key] = time.time() + self.settings.fuse_seconds
                         self.quality.fused[fuse_key] = self.fuse_until[fuse_key]
@@ -408,16 +490,36 @@ class HttpClient:
             self.cache.pop(key, None)
         self._cache_expired_pruned += len(expired)
 
-    def diagnostics(self) -> dict[str, int]:
+    def _store_memory_cache_locked(self, key: str, data: Any) -> None:
+        self._prune_cache_locked(time.time())
+        self.cache.pop(key, None)
+        while len(self.cache) >= self.cache_max_entries:
+            self.cache.popitem(last=False)
+            self._cache_evictions += 1
+        self.cache[key] = (time.time(), data)
+
+    def _shared_cache_ttl(self, quality_key: str) -> int:
+        configured = max(0, int(self.settings.http_cache_ttl_sec))
+        return {
+            "exchangeInfo": max(configured, 300),
+            "spotExchangeInfo": max(configured, 300),
+            "ticker24hr": max(configured, 20),
+            "marketCaps": max(configured, 3600),
+            "coinpaprikaMarketCaps": max(configured, 3600),
+        }.get(quality_key, configured)
+
+    def diagnostics(self) -> dict[str, Any]:
         with self._state_lock:
             if self.settings.http_cache_enable:
                 self._prune_cache_locked(time.time())
-            return {
+            result: dict[str, Any] = {
                 "entries": len(self.cache),
                 "max_entries": self.cache_max_entries,
                 "evictions": self._cache_evictions,
                 "expired_pruned": self._cache_expired_pruned,
             }
+        result["coordination"] = self.coordinator.diagnostics()
+        return result
 
     @staticmethod
     def _cache_key(url: str, params: Optional[dict[str, Any]]) -> str:
@@ -427,7 +529,14 @@ class HttpClient:
 
 
 class BinanceDataSource:
-    def __init__(self, settings: Settings, *, oi_hist_budget: int | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        oi_hist_budget: int | None = None,
+        kline_budget: int | None = None,
+        spot_kline_budget: int | None = None,
+    ):
         self.settings = settings
         self.quality = DataQuality()
         self.budget = RequestBudget({
@@ -436,8 +545,16 @@ class BinanceDataSource:
                 if oi_hist_budget is None
                 else max(0, int(oi_hist_budget))
             ),
-            "klines": settings.kline_budget,
-            "spot_klines": settings.kline_budget,
+            "klines": (
+                settings.kline_budget
+                if kline_budget is None
+                else max(0, int(kline_budget))
+            ),
+            "spot_klines": (
+                settings.kline_budget
+                if spot_kline_budget is None
+                else max(0, int(spot_kline_budget))
+            ),
             "funding_history": settings.funding_history_budget,
         })
         self.http = HttpClient(settings, self.quality)
@@ -707,7 +824,7 @@ class BinanceDataSource:
             quality_key="coinpaprikaMarketCaps",
             timeout=15,
             retries=1,
-            cache=False,
+            cache=True,
         )
         result: dict[str, tuple[float, int]] = {}
         if not isinstance(data, list):

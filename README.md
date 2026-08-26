@@ -1,10 +1,10 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.1.2` 延续 BOT-only 运行时，新增默认关闭、独立话题隔离且可恢复的盘整突破雷达，并修复服务器测试隔离与静态 systemd 单元的发布回滚。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。当前版本延续 BOT-only 运行时和独立盘整突破雷达，并将脉冲雷达升级为严格加密资产池、四档市值 × 三档流动性、全量 15 分钟覆盖以及跨服务统一缓存/限流。
 
 ## 核心功能
 
-- 脉冲雷达：15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时对成交额前 200 个合约的持仓价格背离汇总。
+- 脉冲雷达：严格排除传统金融、稳定币和未知资产；对全部合格加密合约执行 15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时对成交额前 200 个合约的持仓价格背离汇总。
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
@@ -55,13 +55,20 @@ TG_CHAT_ID=-1001234567890
 
 ```dotenv
 PULSE_RADAR_ENABLE=true
-SIMPLE_ALERT_SCAN_LIMIT=80
+SIMPLE_ALERT_SCAN_LIMIT=0
+SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000
 DIVERGENCE_SCAN_LIMIT=200
-KLINE_REQUEST_BUDGET=120
+BINANCE_SHARED_CACHE_ENABLE=true
+BINANCE_GLOBAL_RATE_LIMIT_ENABLE=true
 ```
 
-15 分钟默认细算 80 个候选，并在 120 次 K 线请求预算中保留 40 次给触发后的
-1 小时图表。`readiness` 会阻止“扫描数量 + 图表预留”超过 K 线预算的真实发送。
+`SIMPLE_ALERT_SCAN_LIMIT=0` 表示不设人工数量上限：先按交易所合约元数据严格识别
+加密资产，再保留 24 小时成交额不少于 100 万美元的合约。每轮按照市值高/中/低/
+待补全四档和流动性高/中/低三档计算独立价格、OI、OI金额和CVD门槛；默认 8 个
+受控 worker 完成细算。细算预算按实际合约数动态分配，触发后图表额外预留 40 次
+K线与OI请求；所有本机服务通过同一个 SQLite 账本共享公开行情缓存和 Binance
+限流额度。详细口径、降级方式和诊断字段见
+[脉冲雷达全量资产池说明](docs/PULSE_UNIVERSE_CN.md)。
 
 Dry-run 不写入脉冲跟随状态、复盘记录或回复状态。只有真实发送成功后才提交这些
 状态；若一张新卡分段发送到一半失败，只撤回本次未完整发送的新消息，不会删除
@@ -154,8 +161,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.1.2
-bash scripts/deploy_tag.sh --tag v2.1.2 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.2.0
+bash scripts/deploy_tag.sh --tag v2.2.0 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

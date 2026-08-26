@@ -109,6 +109,7 @@ for _symbol, _sector in {
     "AVGO": "半导体",
     "INTC": "半导体",
     "PLTR": "数据与AI",
+    "MRNA": "生物医药",
     "BABA": "全球市场",
     "SPCX": "大型科技",
 }.items():
@@ -232,7 +233,7 @@ def classify_binance_instrument(
         "asset_theme_tags": themes,
         "asset_category_source": (
             "binance_exchange_info"
-            if themes or "INDEX" in words
+            if themes or "INDEX" in words or words & {"COIN", "CRYPTO"}
             else "reviewed_crypto_tier"
             if base in CORE_CRYPTO or base in LARGE_CRYPTO
             else "symbol_fallback"
@@ -240,10 +241,44 @@ def classify_binance_instrument(
     }
 
 
+def crypto_contract_eligibility(
+    symbol: str,
+    metadata: Mapping[str, Any] | None,
+    *,
+    excluded_base_assets: set[str] | frozenset[str] | None = None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Fail closed unless exchange metadata reliably identifies crypto."""
+
+    info = metadata if isinstance(metadata, Mapping) else {}
+    classification = classify_binance_instrument(symbol, info)
+    base = _base_asset(symbol, info)
+    excluded = {
+        str(value or "").strip().upper()
+        for value in (excluded_base_assets or set())
+        if str(value or "").strip()
+    }
+    if str(info.get("status") or "").upper() != "TRADING":
+        return False, "not_trading", classification
+    if str(info.get("quoteAsset") or "").upper() != "USDT":
+        return False, "non_usdt_quote", classification
+    if str(info.get("contractType") or "").upper() != "PERPETUAL":
+        return False, "non_crypto_contract_type", classification
+    if is_stable_crypto_asset(base):
+        return False, "stablecoin", classification
+    if base in excluded:
+        return False, "configured_exclusion", classification
+    if classification.get("asset_family") != "crypto":
+        return False, "tradfi", classification
+    if classification.get("asset_category_source") == "symbol_fallback":
+        return False, "unknown_asset", classification
+    return True, "eligible_crypto", classification
+
+
 __all__ = [
     "CORE_CRYPTO",
     "LARGE_CRYPTO",
     "STABLE_CRYPTO",
     "classify_binance_instrument",
+    "crypto_contract_eligibility",
     "is_stable_crypto_asset",
 ]

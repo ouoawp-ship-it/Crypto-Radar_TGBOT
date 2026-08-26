@@ -5,6 +5,7 @@ import unittest
 from radars.pulse.simple_alert import _asset_tier
 from shared.asset_classification import (
     classify_binance_instrument,
+    crypto_contract_eligibility,
     is_stable_crypto_asset,
 )
 
@@ -31,6 +32,12 @@ class AssetClassificationTests(unittest.TestCase):
         self.assertIn("原油", oil["asset_category_label"])
         self.assertEqual(equity["asset_class"], "equity")
         self.assertIn("半导体", equity["asset_category_label"])
+
+    def test_mrna_is_reviewed_equity_not_altcoin(self) -> None:
+        result = classify_binance_instrument("MRNAUSDT")
+
+        self.assertEqual(result["asset_family"], "tradfi")
+        self.assertEqual(result["asset_class"], "equity")
 
     def test_crypto_tier_and_exchange_theme_are_both_preserved(self) -> None:
         bitcoin = classify_binance_instrument(
@@ -76,6 +83,64 @@ class AssetClassificationTests(unittest.TestCase):
         self.assertEqual(stock["asset_class"], "equity")
         self.assertEqual(stock["asset_category_source"], "binance_exchange_info")
         self.assertEqual(tokenized["instrument_type"], "tokenized_equity")
+
+    def test_strict_contract_gate_accepts_reviewed_crypto_and_quarantines_unknown(self) -> None:
+        eligible, reason, classification = crypto_contract_eligibility(
+            "TESTUSDT",
+            {
+                "symbol": "TESTUSDT",
+                "baseAsset": "TEST",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+                "underlyingType": "COIN",
+            },
+        )
+        unknown, unknown_reason, _ = crypto_contract_eligibility(
+            "MYSTERYUSDT",
+            {
+                "symbol": "MYSTERYUSDT",
+                "baseAsset": "MYSTERY",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+            },
+        )
+
+        self.assertTrue(eligible)
+        self.assertEqual(reason, "eligible_crypto")
+        self.assertEqual(classification["asset_category_source"], "binance_exchange_info")
+        self.assertFalse(unknown)
+        self.assertEqual(unknown_reason, "unknown_asset")
+
+    def test_strict_contract_gate_rejects_tradfi_contract_type_and_stablecoin(self) -> None:
+        tradfi, tradfi_reason, _ = crypto_contract_eligibility(
+            "MRNAUSDT",
+            {
+                "symbol": "MRNAUSDT",
+                "baseAsset": "MRNA",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "EQUITY",
+            },
+        )
+        stable, stable_reason, _ = crypto_contract_eligibility(
+            "USDCUSDT",
+            {
+                "symbol": "USDCUSDT",
+                "baseAsset": "USDC",
+                "quoteAsset": "USDT",
+                "status": "TRADING",
+                "contractType": "PERPETUAL",
+                "underlyingType": "COIN",
+            },
+        )
+
+        self.assertFalse(tradfi)
+        self.assertEqual(tradfi_reason, "non_crypto_contract_type")
+        self.assertFalse(stable)
+        self.assertEqual(stable_reason, "stablecoin")
 
     def test_pulse_threshold_tiers_use_shared_asset_classification(self) -> None:
         self.assertEqual(_asset_tier("BTCUSDT"), "core")
