@@ -276,6 +276,46 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=0", text)
         self.assertIn("KLINE_REQUEST_BUDGET=120", text)
 
+    def test_sync_migrates_old_pulse_liquidity_floor_to_low_tier(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "SIMPLE_ALERT_MIN_QUOTE_VOLUME=5000000\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000", text)
+        self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME", result["updated"])
+
+    def test_sync_preserves_custom_pulse_liquidity_floor(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "SIMPLE_ALERT_MIN_QUOTE_VOLUME=2000000\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME=2000000", text)
+        self.assertNotIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME", result["updated"])
+
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:

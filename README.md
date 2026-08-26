@@ -161,8 +161,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.2.0
-bash scripts/deploy_tag.sh --tag v2.2.0 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.2.1
+bash scripts/deploy_tag.sh --tag v2.2.1 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：
