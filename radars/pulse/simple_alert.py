@@ -3,12 +3,14 @@
 ========================================
 
 功能：
-- 每 15 分钟两段式扫描：先用一次 24 小时行情接口全市场初筛（固定成交额头部 + 当天异动币），
-  再只对候选币做 5m/15m/30m/1h/24h 价格/持仓/量能/资金流/多空比细算；
+- 每 15 分钟严格排除 TradFi、稳定币和未知资产，完整扫描达到最低流动性要求的
+  加密合约；正数 scan-limit 只用于人工诊断；
+- 按市值四档 × 流动性三档分别计算价格、持仓、OI金额和CVD门槛，并以受控并发
+  完成 5m/15m/30m/1h/24h 细算；
 - 按「价格 × 持仓 × CVD(主动资金流)」组合分为 6 类模板：
     健康上涨（新多进场） / 假强背离（警惕拉高出货） / 空头回补（挤空）
     健康下跌（新空进场） / 假弱承接（下跌接货） / 恐慌杀多（多头止损）
-- 达到分级阈值（按资产类别分档）后推送 Telegram 卡片；
+- 达到分级阈值后推送 Telegram 卡片，标题明确区分价格、持仓或双触发；
 - 首次触发立即发送，之后进入跟随监控：同币种 2 小时事件窗口内，
   只有「升级」或「状态反转」才再发，每事件最多 3 次；
   连续 2 个窗口安静后重置，事件窗口到期后重新按第 1 次计。
@@ -31,7 +33,8 @@
   run_once(settings, gateway, send=..., confirm_real_send=...)   # 由 runtime/cli.py 调用
 
 说明：
-- 触发阈值 = 15 分钟价格变化或持仓变化，任一达到即触发（按资产类别分档）；
+- 价格和持仓使用独立阈值；持仓还需通过实际OI金额门槛，CVD同时检查净额和
+  15分钟成交额占比；
 - 方向判断用小阈值（默认 ±1%），CVD 方向用 15 分钟合约+现货主动净额合计；
 - 多空比只在触发后按需拉取，带 5 分钟缓存；失败时卡片显示「—」，不影响分类；
 - 合约/现货资金流单边缺失时按可用侧计算，双侧缺失则不分类、不推送。
@@ -46,6 +49,7 @@ import math
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config.settings import Settings  # noqa: E402
 from shared.asset_classification import (  # noqa: E402
     classify_binance_instrument,
-    is_stable_crypto_asset,
+    crypto_contract_eligibility,
 )
 from shared.binance_data import BinanceDataSource  # noqa: E402
 from radars.pulse.chart import (  # noqa: E402
@@ -177,11 +181,17 @@ SIGNAL_DIRECTIONS = {
     "panic_dump": "short",
 }
 
-_TIER_LABELS = {
-    "core": "核心主流",
-    "large": "大盘",
-    "alt": "山寨币",
-    "unknown": "其它",
+_MARKET_CAP_TIER_LABELS = {
+    "high": "高市值",
+    "medium": "中市值",
+    "low": "低市值",
+    "unknown": "市值待补全",
+}
+
+_LIQUIDITY_TIER_LABELS = {
+    "high": "高流动性",
+    "medium": "中流动性",
+    "low": "低流动性",
 }
 
 _LSR_CACHE: dict[str, tuple[float, float | None]] = {}
@@ -202,17 +212,56 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float_alias(name: str, legacy_name: str, default: float) -> float:
+    if os.getenv(name) is not None:
+        return _env_float(name, default)
+    return _env_float(legacy_name, default)
+
+
+@dataclass(frozen=True)
+class PulseCandidate:
+    symbol: str
+    base: str
+    quote_volume_24h: float
+    price_change_24h: float
+    market_cap: float | None
+    market_cap_source: str
+    market_cap_tier: str
+    liquidity_tier: str
+    classification: Mapping[str, Any]
+
+
 @dataclass(frozen=True)
 class SimpleAlertConfig:
-    scan_limit: int = 80
+    # 0 scans the complete eligible universe; positive values are manual caps.
+    scan_limit: int = 0
     fixed_top: int = 30
     rotation_slots: int = 10
     ticker_filter_pct: float = 2.0
-    min_quote_volume_usd: float = 5_000_000.0
-    threshold_core_pct: float = 8.0
-    threshold_large_pct: float = 12.0
-    threshold_alt_pct: float = 15.0
-    threshold_unknown_pct: float = 20.0
+    min_quote_volume_usd: float = 1_000_000.0
+    market_cap_high_min_usd: float = 1_000_000_000.0
+    market_cap_medium_min_usd: float = 100_000_000.0
+    liquidity_high_min_usd: float = 20_000_000.0
+    liquidity_medium_min_usd: float = 5_000_000.0
+    price_threshold_high_pct: float = 8.0
+    price_threshold_medium_pct: float = 12.0
+    price_threshold_low_pct: float = 15.0
+    price_threshold_unknown_pct: float = 20.0
+    oi_threshold_high_pct: float = 8.0
+    oi_threshold_medium_pct: float = 12.0
+    oi_threshold_low_pct: float = 15.0
+    oi_threshold_unknown_pct: float = 20.0
+    liquidity_factor_high: float = 0.85
+    liquidity_factor_medium: float = 1.0
+    liquidity_factor_low: float = 1.25
+    oi_delta_high_liquidity_min_usd: float = 250_000.0
+    oi_delta_medium_liquidity_min_usd: float = 100_000.0
+    oi_delta_low_liquidity_min_usd: float = 50_000.0
+    cvd_ratio_high_liquidity_min_pct: float = 0.5
+    cvd_ratio_medium_liquidity_min_pct: float = 1.0
+    cvd_ratio_low_liquidity_min_pct: float = 2.0
+    low_liquidity_min_volume_multiple: float = 1.5
+    scan_workers: int = 8
     direction_deadband_pct: float = 1.0
     cvd_min_net_usd: float = 5_000.0
     follow_window_sec: int = 2 * 3600
@@ -227,7 +276,7 @@ class SimpleAlertConfig:
     def from_env(cls, settings: Settings) -> "SimpleAlertConfig":
         return cls(
             scan_limit=max(
-                1,
+                0,
                 _env_int(
                     "SIMPLE_ALERT_SCAN_LIMIT",
                     int(settings.pulse_simple_scan_limit),
@@ -237,19 +286,102 @@ class SimpleAlertConfig:
             rotation_slots=max(0, _env_int("SIMPLE_ALERT_ROTATION_SLOTS", 10)),
             ticker_filter_pct=max(0.0, _env_float("SIMPLE_ALERT_TICKER_FILTER_PCT", 2.0)),
             min_quote_volume_usd=max(
-                0.0, _env_float("SIMPLE_ALERT_MIN_QUOTE_VOLUME", 5_000_000.0)
+                0.0, _env_float("SIMPLE_ALERT_MIN_QUOTE_VOLUME", 1_000_000.0)
             ),
-            threshold_core_pct=max(
-                1.0, _env_float("SIMPLE_ALERT_THRESHOLD_CORE_PCT", 8.0)
+            market_cap_high_min_usd=max(
+                1.0,
+                _env_float("SIMPLE_ALERT_MARKET_CAP_HIGH_MIN_USD", 1_000_000_000.0),
             ),
-            threshold_large_pct=max(
-                1.0, _env_float("SIMPLE_ALERT_THRESHOLD_LARGE_PCT", 12.0)
+            market_cap_medium_min_usd=max(
+                1.0,
+                _env_float("SIMPLE_ALERT_MARKET_CAP_MEDIUM_MIN_USD", 100_000_000.0),
             ),
-            threshold_alt_pct=max(
-                1.0, _env_float("SIMPLE_ALERT_THRESHOLD_ALT_PCT", 15.0)
+            liquidity_high_min_usd=max(
+                1.0,
+                _env_float("SIMPLE_ALERT_LIQUIDITY_HIGH_MIN_USD", 20_000_000.0),
             ),
-            threshold_unknown_pct=max(
-                1.0, _env_float("SIMPLE_ALERT_THRESHOLD_UNKNOWN_PCT", 20.0)
+            liquidity_medium_min_usd=max(
+                1.0,
+                _env_float("SIMPLE_ALERT_LIQUIDITY_MEDIUM_MIN_USD", 5_000_000.0),
+            ),
+            price_threshold_high_pct=max(
+                1.0,
+                _env_float_alias(
+                    "SIMPLE_ALERT_PRICE_THRESHOLD_HIGH_PCT",
+                    "SIMPLE_ALERT_THRESHOLD_CORE_PCT",
+                    8.0,
+                ),
+            ),
+            price_threshold_medium_pct=max(
+                1.0,
+                _env_float_alias(
+                    "SIMPLE_ALERT_PRICE_THRESHOLD_MEDIUM_PCT",
+                    "SIMPLE_ALERT_THRESHOLD_LARGE_PCT",
+                    12.0,
+                ),
+            ),
+            price_threshold_low_pct=max(
+                1.0,
+                _env_float_alias(
+                    "SIMPLE_ALERT_PRICE_THRESHOLD_LOW_PCT",
+                    "SIMPLE_ALERT_THRESHOLD_ALT_PCT",
+                    15.0,
+                ),
+            ),
+            price_threshold_unknown_pct=max(
+                1.0,
+                _env_float_alias(
+                    "SIMPLE_ALERT_PRICE_THRESHOLD_UNKNOWN_PCT",
+                    "SIMPLE_ALERT_THRESHOLD_UNKNOWN_PCT",
+                    20.0,
+                ),
+            ),
+            oi_threshold_high_pct=max(
+                1.0, _env_float("SIMPLE_ALERT_OI_THRESHOLD_HIGH_PCT", 8.0)
+            ),
+            oi_threshold_medium_pct=max(
+                1.0, _env_float("SIMPLE_ALERT_OI_THRESHOLD_MEDIUM_PCT", 12.0)
+            ),
+            oi_threshold_low_pct=max(
+                1.0, _env_float("SIMPLE_ALERT_OI_THRESHOLD_LOW_PCT", 15.0)
+            ),
+            oi_threshold_unknown_pct=max(
+                1.0, _env_float("SIMPLE_ALERT_OI_THRESHOLD_UNKNOWN_PCT", 20.0)
+            ),
+            liquidity_factor_high=max(
+                0.1, _env_float("SIMPLE_ALERT_LIQUIDITY_FACTOR_HIGH", 0.85)
+            ),
+            liquidity_factor_medium=max(
+                0.1, _env_float("SIMPLE_ALERT_LIQUIDITY_FACTOR_MEDIUM", 1.0)
+            ),
+            liquidity_factor_low=max(
+                0.1, _env_float("SIMPLE_ALERT_LIQUIDITY_FACTOR_LOW", 1.25)
+            ),
+            oi_delta_high_liquidity_min_usd=max(
+                0.0, _env_float("SIMPLE_ALERT_OI_DELTA_HIGH_MIN_USD", 250_000.0)
+            ),
+            oi_delta_medium_liquidity_min_usd=max(
+                0.0, _env_float("SIMPLE_ALERT_OI_DELTA_MEDIUM_MIN_USD", 100_000.0)
+            ),
+            oi_delta_low_liquidity_min_usd=max(
+                0.0, _env_float("SIMPLE_ALERT_OI_DELTA_LOW_MIN_USD", 50_000.0)
+            ),
+            cvd_ratio_high_liquidity_min_pct=max(
+                0.0, _env_float("SIMPLE_ALERT_CVD_RATIO_HIGH_MIN_PCT", 0.5)
+            ),
+            cvd_ratio_medium_liquidity_min_pct=max(
+                0.0, _env_float("SIMPLE_ALERT_CVD_RATIO_MEDIUM_MIN_PCT", 1.0)
+            ),
+            cvd_ratio_low_liquidity_min_pct=max(
+                0.0, _env_float("SIMPLE_ALERT_CVD_RATIO_LOW_MIN_PCT", 2.0)
+            ),
+            low_liquidity_min_volume_multiple=max(
+                0.0,
+                _env_float("SIMPLE_ALERT_LOW_LIQ_MIN_VOLUME_MULTIPLE", 1.5),
+            ),
+            scan_workers=max(
+                1,
+                min(16, _env_int("SIMPLE_ALERT_SCAN_WORKERS", 8)),
             ),
             direction_deadband_pct=max(
                 0.0, _env_float("SIMPLE_ALERT_DIRECTION_DEADBAND_PCT", 1.0)
@@ -273,13 +405,61 @@ class SimpleAlertConfig:
             ),
         )
 
-    def threshold_for_tier(self, tier: str) -> float:
+    def market_cap_tier(self, market_cap: float | None) -> str:
+        if market_cap is None or market_cap <= 0:
+            return "unknown"
+        if market_cap >= self.market_cap_high_min_usd:
+            return "high"
+        if market_cap >= self.market_cap_medium_min_usd:
+            return "medium"
+        return "low"
+
+    def liquidity_tier(self, quote_volume_24h: float) -> str | None:
+        if quote_volume_24h >= self.liquidity_high_min_usd:
+            return "high"
+        if quote_volume_24h >= self.liquidity_medium_min_usd:
+            return "medium"
+        if quote_volume_24h >= self.min_quote_volume_usd:
+            return "low"
+        return None
+
+    def trigger_thresholds(
+        self,
+        market_cap_tier: str,
+        liquidity_tier: str,
+    ) -> tuple[float, float]:
+        price_base = {
+            "high": self.price_threshold_high_pct,
+            "medium": self.price_threshold_medium_pct,
+            "low": self.price_threshold_low_pct,
+            "unknown": self.price_threshold_unknown_pct,
+        }.get(market_cap_tier, self.price_threshold_unknown_pct)
+        oi_base = {
+            "high": self.oi_threshold_high_pct,
+            "medium": self.oi_threshold_medium_pct,
+            "low": self.oi_threshold_low_pct,
+            "unknown": self.oi_threshold_unknown_pct,
+        }.get(market_cap_tier, self.oi_threshold_unknown_pct)
+        factor = {
+            "high": self.liquidity_factor_high,
+            "medium": self.liquidity_factor_medium,
+            "low": self.liquidity_factor_low,
+        }.get(liquidity_tier, self.liquidity_factor_low)
+        return price_base * factor, oi_base * factor
+
+    def oi_delta_min_usd(self, liquidity_tier: str) -> float:
         return {
-            "core": self.threshold_core_pct,
-            "large": self.threshold_large_pct,
-            "alt": self.threshold_alt_pct,
-            "unknown": self.threshold_unknown_pct,
-        }.get(tier, self.threshold_unknown_pct)
+            "high": self.oi_delta_high_liquidity_min_usd,
+            "medium": self.oi_delta_medium_liquidity_min_usd,
+            "low": self.oi_delta_low_liquidity_min_usd,
+        }.get(liquidity_tier, self.oi_delta_low_liquidity_min_usd)
+
+    def cvd_ratio_min_pct(self, liquidity_tier: str) -> float:
+        return {
+            "high": self.cvd_ratio_high_liquidity_min_pct,
+            "medium": self.cvd_ratio_medium_liquidity_min_pct,
+            "low": self.cvd_ratio_low_liquidity_min_pct,
+        }.get(liquidity_tier, self.cvd_ratio_low_liquidity_min_pct)
 
 
 def _number(value: Any) -> float | None:
@@ -408,86 +588,182 @@ def _candidate_pool(
     cfg: SimpleAlertConfig,
     limit: int,
     window_index: int,
-) -> list[str]:
-    """两段式候选选择：全市场 24h 行情初筛 → 固定头部 + 当天异动优先。
+    market_caps: Mapping[str, float] | None = None,
+    market_cap_sources: Mapping[str, str] | None = None,
+) -> tuple[list[PulseCandidate], dict[str, Any]]:
+    """Build a fail-closed crypto universe, then apply an optional manual cap."""
 
-    第一段只发一次 ticker/24hr 请求覆盖全部 USDT 永续；
-    第二段从通过最低成交额过滤的池子里选：
-      1) 固定成交额头部（fixed_top 个，每轮必扫）；
-      2) 当天 24h 异动币（|24h 涨跌幅| ≥ ticker_filter_pct，按异动幅度排序）；
-      3) 剩余名额用轮换补齐，保证中小币也有机会被扫到。
-    """
+    market_caps = market_caps or {}
+    market_cap_sources = market_cap_sources or {}
+    diagnostics: dict[str, Any] = {
+        "active_usdt_contracts": 0,
+        "eligible_crypto_contracts": 0,
+        "rejected": {},
+        "below_liquidity_floor": 0,
+        "ticker_missing": 0,
+        "market_cap_known": 0,
+        "market_cap_unknown": 0,
+        "tier_matrix": {},
+        "manual_cap": max(0, int(limit)),
+    }
+    try:
+        exchange_info = source.exchange_info()
+    except Exception:
+        exchange_info = None
+    raw_contracts = (
+        exchange_info.get("symbols")
+        if isinstance(exchange_info, Mapping)
+        else None
+    )
+    if not isinstance(raw_contracts, list):
+        diagnostics["catalogue_status"] = "unavailable"
+        diagnostics["full_coverage"] = False
+        return [], diagnostics
+
+    excluded = {
+        str(item).strip().upper()
+        for item in source.settings.excluded_base_assets
+        if str(item).strip()
+    }
+    eligible: dict[str, tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
+    rejected: dict[str, int] = {}
+    for contract in raw_contracts:
+        if not isinstance(contract, Mapping):
+            continue
+        if (
+            str(contract.get("status") or "").upper() != "TRADING"
+            or str(contract.get("quoteAsset") or "").upper() != "USDT"
+        ):
+            continue
+        diagnostics["active_usdt_contracts"] += 1
+        symbol = str(contract.get("symbol") or "").strip().upper()
+        allowed, reason, classification = crypto_contract_eligibility(
+            symbol,
+            contract,
+            excluded_base_assets=excluded,
+        )
+        if not allowed:
+            rejected[reason] = rejected.get(reason, 0) + 1
+            continue
+        eligible[symbol] = (contract, classification)
+    diagnostics["rejected"] = dict(sorted(rejected.items()))
+    diagnostics["eligible_crypto_contracts"] = len(eligible)
+
     try:
         tickers = source.ticker_24h()
     except Exception:
         tickers = []
-    excluded = {str(item).upper() for item in source.settings.excluded_base_assets}
-    rows: list[tuple[float, float, str]] = []
+    seen_tickers: set[str] = set()
+    rows: list[PulseCandidate] = []
     for ticker in tickers if isinstance(tickers, list) else []:
         if not isinstance(ticker, Mapping):
             continue
         symbol = str(ticker.get("symbol") or "").strip().upper()
-        if not symbol.endswith("USDT"):
+        if symbol not in eligible or symbol in seen_tickers:
             continue
-        base = symbol[:-4]
-        if is_stable_crypto_asset(base) or base in excluded:
-            continue
+        seen_tickers.add(symbol)
+        contract, classification = eligible[symbol]
+        base = str(contract.get("baseAsset") or symbol[:-4]).strip().upper()
         quote_volume = _number(ticker.get("quoteVolume")) or 0.0
-        if quote_volume < cfg.min_quote_volume_usd:
+        liquidity_tier = cfg.liquidity_tier(quote_volume)
+        if liquidity_tier is None:
+            diagnostics["below_liquidity_floor"] += 1
             continue
-        change_24h = abs(_number(ticker.get("priceChangePercent")) or 0.0)
-        rows.append((quote_volume, change_24h, symbol))
-    rows.sort(key=lambda row: (-row[0], row[2]))
-
-    fixed_top = min(max(0, cfg.fixed_top), limit)
-    selected = [row[2] for row in rows[:fixed_top]]
-    selected_set = set(selected)
-    remaining = rows[fixed_top:]
-
-    anomalies = [row for row in remaining if row[1] >= cfg.ticker_filter_pct]
-    anomalies.sort(key=lambda row: (-row[1], -row[0], row[2]))
-    rotation = [row[2] for row in remaining if row[1] < cfg.ticker_filter_pct]
-    rotation.sort()
-    rotation_reserve = min(
-        max(0, cfg.rotation_slots),
-        max(0, limit - len(selected)),
-        len(rotation),
+        market_cap = _number(market_caps.get(base))
+        rows.append(PulseCandidate(
+            symbol=symbol,
+            base=base,
+            quote_volume_24h=quote_volume,
+            price_change_24h=_number(ticker.get("priceChangePercent")) or 0.0,
+            market_cap=market_cap,
+            market_cap_source=str(market_cap_sources.get(base) or ""),
+            market_cap_tier=cfg.market_cap_tier(market_cap),
+            liquidity_tier=liquidity_tier,
+            classification=classification,
+        ))
+    rows.sort(key=lambda row: (-row.quote_volume_24h, row.symbol))
+    diagnostics["ticker_missing"] = max(0, len(eligible) - len(seen_tickers))
+    diagnostics["eligible_after_liquidity"] = len(rows)
+    diagnostics["market_cap_known"] = sum(
+        candidate.market_cap is not None for candidate in rows
     )
-    anomaly_limit = max(len(selected), limit - rotation_reserve)
-    for _volume, _change, symbol in anomalies:
-        if len(selected) >= anomaly_limit:
-            break
-        if symbol in selected_set:
-            continue
-        selected.append(symbol)
-        selected_set.add(symbol)
+    diagnostics["market_cap_unknown"] = sum(
+        candidate.market_cap is None for candidate in rows
+    )
 
-    if len(selected) < limit and rotation:
-        offset = (window_index * max(1, len(selected) + 1)) % len(rotation)
-        ordered = rotation[offset:] + rotation[:offset]
-        for symbol in ordered:
-            if len(selected) >= limit:
+    if limit <= 0 or limit >= len(rows):
+        selected = list(rows)
+    else:
+        fixed_top = min(max(0, cfg.fixed_top), limit)
+        selected = list(rows[:fixed_top])
+        selected_set = {candidate.symbol for candidate in selected}
+        remaining = rows[fixed_top:]
+        anomalies = [
+            candidate
+            for candidate in remaining
+            if abs(candidate.price_change_24h) >= cfg.ticker_filter_pct
+        ]
+        anomalies.sort(key=lambda candidate: (
+            -abs(candidate.price_change_24h),
+            -candidate.quote_volume_24h,
+            candidate.symbol,
+        ))
+        rotation = [
+            candidate
+            for candidate in remaining
+            if abs(candidate.price_change_24h) < cfg.ticker_filter_pct
+        ]
+        rotation.sort(key=lambda candidate: candidate.symbol)
+        rotation_reserve = min(
+            max(0, cfg.rotation_slots),
+            max(0, limit - len(selected)),
+            len(rotation),
+        )
+        anomaly_limit = max(len(selected), limit - rotation_reserve)
+        for candidate in anomalies:
+            if len(selected) >= anomaly_limit:
                 break
-            if symbol not in selected_set:
-                selected.append(symbol)
-                selected_set.add(symbol)
+            if candidate.symbol in selected_set:
+                continue
+            selected.append(candidate)
+            selected_set.add(candidate.symbol)
 
-    if len(selected) < limit:
-        for _volume, _change, symbol in anomalies:
-            if len(selected) >= limit:
-                break
-            if symbol not in selected_set:
-                selected.append(symbol)
-                selected_set.add(symbol)
-    return selected
+        if len(selected) < limit and rotation:
+            offset = (window_index * max(1, len(selected) + 1)) % len(rotation)
+            ordered = rotation[offset:] + rotation[:offset]
+            for candidate in ordered:
+                if len(selected) >= limit:
+                    break
+                if candidate.symbol not in selected_set:
+                    selected.append(candidate)
+                    selected_set.add(candidate.symbol)
+
+        if len(selected) < limit:
+            for candidate in anomalies:
+                if len(selected) >= limit:
+                    break
+                if candidate.symbol not in selected_set:
+                    selected.append(candidate)
+                    selected_set.add(candidate.symbol)
+
+    matrix: dict[str, int] = {}
+    for candidate in selected:
+        key = f"{candidate.market_cap_tier}x{candidate.liquidity_tier}"
+        matrix[key] = matrix.get(key, 0) + 1
+    diagnostics["tier_matrix"] = dict(sorted(matrix.items()))
+    diagnostics["selected"] = len(selected)
+    diagnostics["full_coverage"] = len(selected) == len(rows)
+    diagnostics["catalogue_status"] = "ready"
+    return selected, diagnostics
 
 
 def _analyze_symbol(
     source: BinanceDataSource,
-    symbol: str,
+    candidate: PulseCandidate,
     window_end_ms: int,
     cfg: SimpleAlertConfig,
 ) -> dict[str, Any] | None:
+    symbol = candidate.symbol
     start_ms = max(0, window_end_ms - _SERIES_POINTS * _5M_MS)
     try:
         klines = source.klines(
@@ -542,43 +818,104 @@ def _analyze_symbol(
         cvd_net = None
     else:
         cvd_net = (futures_15 or 0.0) + (spot_15 or 0.0)
-
-    tier = _asset_tier(symbol)
-    threshold = cfg.threshold_for_tier(tier)
+    futures_gross_15 = sum(quotes[-3:]) if len(quotes) >= 3 else None
+    spot_gross_15 = sum(spot_quotes[-3:]) if len(spot_quotes) >= 3 else None
+    if futures_gross_15 is None and spot_gross_15 is None:
+        cvd_gross_15 = None
+    else:
+        cvd_gross_15 = (futures_gross_15 or 0.0) + (spot_gross_15 or 0.0)
+    cvd_ratio_15m_pct = (
+        abs(cvd_net) / cvd_gross_15 * 100.0
+        if cvd_net is not None and cvd_gross_15 and cvd_gross_15 > 0
+        else None
+    )
+    cvd_ratio_min_pct = cfg.cvd_ratio_min_pct(candidate.liquidity_tier)
+    cvd_required_usd = max(
+        cfg.cvd_min_net_usd,
+        (cvd_gross_15 or 0.0) * cvd_ratio_min_pct / 100.0,
+    )
+    price_threshold, oi_threshold = cfg.trigger_thresholds(
+        candidate.market_cap_tier,
+        candidate.liquidity_tier,
+    )
+    oi_delta_15m_usd = (
+        oi_values[-1] - oi_values[-4]
+        if len(oi_values) > 3
+        else None
+    )
+    oi_delta_min_usd = cfg.oi_delta_min_usd(candidate.liquidity_tier)
     template = classify_template(
         price_map.get(3),
         oi_map.get(3),
         cvd_net,
         cfg.direction_deadband_pct,
-        cfg.cvd_min_net_usd,
+        cvd_required_usd,
+    )
+    price_15m = price_map.get(3)
+    oi_15m = oi_map.get(3)
+    price_triggered = abs(price_15m or 0.0) >= price_threshold
+    oi_triggered = (
+        abs(oi_15m or 0.0) >= oi_threshold
+        and abs(oi_delta_15m_usd or 0.0) >= oi_delta_min_usd
     )
     if template is not None:
-        price_15m = price_map.get(3)
-        oi_15m = oi_map.get(3)
-        if not (
-            abs(price_15m or 0.0) >= threshold
-            or abs(oi_15m or 0.0) >= threshold
+        if not (price_triggered or oi_triggered):
+            template = None
+        elif (
+            candidate.liquidity_tier == "low"
+            and not (price_triggered and oi_triggered)
+            and (volume_map.get(3) or 0.0)
+            < cfg.low_liquidity_min_volume_multiple
         ):
             template = None
 
-    quote_volume_24h = sum(quotes[-288:]) if len(quotes) >= 288 else None
+    trigger_source = (
+        "both"
+        if price_triggered and oi_triggered
+        else "price"
+        if price_triggered
+        else "oi"
+        if oi_triggered
+        else "none"
+    )
+
     return {
         "symbol": symbol,
-        "base": symbol[:-4],
-        "tier": tier,
-        "tier_label": _TIER_LABELS.get(tier, "其它"),
-        "threshold": threshold,
+        "base": candidate.base,
+        "tier": candidate.market_cap_tier,
+        "tier_label": _MARKET_CAP_TIER_LABELS[candidate.market_cap_tier],
+        "market_cap_tier": candidate.market_cap_tier,
+        "market_cap_tier_label": _MARKET_CAP_TIER_LABELS[
+            candidate.market_cap_tier
+        ],
+        "liquidity_tier": candidate.liquidity_tier,
+        "liquidity_tier_label": _LIQUIDITY_TIER_LABELS[
+            candidate.liquidity_tier
+        ],
+        "price_threshold": price_threshold,
+        "oi_threshold": oi_threshold,
+        "oi_delta_min_usd": oi_delta_min_usd,
+        "trigger_source": trigger_source,
+        "price_triggered": price_triggered,
+        "oi_triggered": oi_triggered,
         "template": template,
         "current_price": closes[-1] if closes else None,
         "current_oi_usd": oi_values[-1] if oi_values else None,
-        "quote_volume_24h": quote_volume_24h,
+        "quote_volume_24h": candidate.quote_volume_24h,
         "price_map": price_map,
         "oi_map": oi_map,
         "volume_map": volume_map,
         "futures_flow": futures_flow,
         "spot_flow": spot_flow,
         "cvd_net_15m": cvd_net,
-        "market_cap": None,
+        "cvd_gross_15m": cvd_gross_15,
+        "cvd_ratio_15m_pct": cvd_ratio_15m_pct,
+        "cvd_ratio_min_pct": cvd_ratio_min_pct,
+        "cvd_required_usd": cvd_required_usd,
+        "oi_delta_15m_usd": oi_delta_15m_usd,
+        "market_cap": candidate.market_cap,
+        "market_cap_source": candidate.market_cap_source,
+        "asset_category": dict(candidate.classification),
         "long_short_ratio": None,
     }
 
@@ -759,6 +1096,31 @@ def _bold_italic_serif(text: str) -> str:
     return "".join(styled)
 
 
+def _price_trigger_text(value: float | None) -> str:
+    if value is None:
+        return "价格—"
+    direction = "上涨" if value > 0 else "下跌" if value < 0 else "持平"
+    return f"价格{direction} {abs(value):.2f}% {_arrow(value)}"
+
+
+def _oi_trigger_text(value: float | None) -> str:
+    if value is None:
+        return "持仓—"
+    direction = "增加" if value > 0 else "减少" if value < 0 else "持平"
+    return f"持仓{direction} {abs(value):.2f}% {_arrow(value)}"
+
+
+def _trigger_headline(item: Mapping[str, Any]) -> tuple[str, str]:
+    source = str(item.get("trigger_source") or "")
+    price = (item.get("price_map") or {}).get(3)
+    oi = (item.get("oi_map") or {}).get(3)
+    if source == "both":
+        return "价格+持仓触发", f"{_price_trigger_text(price)} · {_oi_trigger_text(oi)}"
+    if source == "oi":
+        return "持仓触发", f"{_oi_trigger_text(oi)} · {_price_trigger_text(price)}"
+    return "价格触发", _price_trigger_text(price)
+
+
 def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) -> str:
     symbol = str(item["symbol"])
     raw_base = str(item["base"])
@@ -774,15 +1136,20 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
 
     price_15m = price_map.get(3)
     oi_15m = oi_map.get(3)
-    trigger_metric = (
-        oi_15m
-        if (oi_15m is not None and (price_15m is None or abs(oi_15m) >= abs(price_15m)))
-        else price_15m
-    )
+    trigger_label, trigger_headline = _trigger_headline(item)
     market_cap = item.get("market_cap")
+    market_cap_source = str(item.get("market_cap_source") or "")
+    market_cap_source_text = (
+        f"（{market_cap_source}）"
+        if market_cap is not None and market_cap_source
+        else ""
+    )
     market_trend = _updown(price_map.get(288))
     cvd_net = item.get("cvd_net_15m")
-    cvd_label, cvd_arrow = _cvd_direction(cvd_net, cfg.cvd_min_net_usd)
+    cvd_label, cvd_arrow = _cvd_direction(
+        cvd_net,
+        _number(item.get("cvd_required_usd")) or cfg.cvd_min_net_usd,
+    )
     futures_15 = futures_flow.get(3)
     spot_15 = spot_flow.get(3)
     if futures_15 is not None and spot_15 is not None:
@@ -823,10 +1190,9 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
         flow_lines.append("⚠️ 该币无币安现货，资金流仅按合约口径")
 
     lines = [
-        f"{meta['icon']} {meta['title']} (第{count}次) {meta['icon']}",
+        f"{meta['icon']} {meta['title']} · {trigger_label} (第{count}次) {meta['icon']}",
         "",
-        f"{display_pair} (<code>{base}</code>) {meta['color']} {meta['direction']} "
-        f"{abs(trigger_metric or 0.0):.2f}% {meta['arrow']}",
+        f"{display_pair} (<code>{base}</code>) {meta['color']} {trigger_headline}",
         "",
         f"🔗 <a href='{tv_url}'>𝑻𝒓𝒂𝒅𝒊𝒏𝒈𝑽𝒊𝒆𝒘</a> | <a href='{cg_url}'>𝑪𝒐𝒊𝒏𝒈𝒍𝒂𝒔𝒔</a>",
         "",
@@ -834,7 +1200,7 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
         "━━━━━━━━━━━━━━━━━━━━",
         "<pre>💰 基础信息",
         f"当前价格: {_fmt_price(item.get('current_price'))}",
-        f"当前市值: {_fmt_money(market_cap)} {market_trend}",
+        f"当前市值: {_fmt_money(market_cap)} {market_trend}{market_cap_source_text}",
         f"{_pad('大户多空比', 10)}: {_lsr_line(item.get('long_short_ratio'))}",
         f"{_pad('15分钟价格', 10)}: {_fmt_pct(price_15m)} {_arrow(price_15m)}",
         f"{_pad('15分钟持仓', 10)}: {_fmt_pct(oi_15m)} {_arrow(oi_15m)}</pre>",
@@ -850,20 +1216,35 @@ def _format_card(item: Mapping[str, Any], count: int, cfg: SimpleAlertConfig) ->
         "━━━━━━━━━━━━━━━━━━━━",
         f"🧭 15分钟CVD方向: {cvd_label} {cvd_arrow}（{cvd_source_label} {_fmt_flow(cvd_net)}）",
         "",
-        f"💡 提醒阈值: 15分钟价格或持仓变动≥{item['threshold']:.1f}%"
-        f"（{item['tier_label']}档） {meta['threshold_emoji']}",
+        f"💡 分档阈值: {item.get('market_cap_tier_label') or item.get('tier_label') or '市值待补全'}"
+        f" × {item.get('liquidity_tier_label') or '中流动性'}｜"
+        f"价格≥{float(item.get('price_threshold') or item.get('threshold') or 0):.1f}%｜"
+        f"持仓≥{float(item.get('oi_threshold') or item.get('threshold') or 0):.1f}%"
+        f"且ΔOI≥{_fmt_money(_number(item.get('oi_delta_min_usd')))} "
+        f"{meta['threshold_emoji']}",
         "",
         f"📌 组合判断: {meta['combo']}",
         "",
         f"📌 结论: {meta['conclusion']}",
         "",
-        f"🟡 数据来源: 币安 Binance",
+        (
+            "🟡 数据来源: 币安 Binance（价格/OI/CVD）"
+            + (
+                "；CoinPaprika（备用市值）"
+                if market_cap_source == "CoinPaprika备用市值"
+                else ""
+            )
+        ),
     ]
     return "\n".join(lines)
 
 
 def _pulse_chart_category(item: Mapping[str, Any]) -> str:
     return {
+        "high": "高市值加密",
+        "medium": "中市值加密",
+        "low": "低市值加密",
+        "unknown": "市值待补全加密",
         "core": "核心主流",
         "large": "主流加密",
         "alt": "山寨币",
@@ -1171,12 +1552,15 @@ def _update_state_on_send(
 def _tick_quiet(
     state: dict[str, Any],
     triggered_symbols: set[str],
+    observed_symbols: set[str],
     cfg: SimpleAlertConfig,
 ) -> None:
     for symbol in list(state.keys()):
         record = state.get(symbol)
         if not isinstance(record, dict):
             state.pop(symbol, None)
+            continue
+        if symbol not in observed_symbols:
             continue
         if symbol in triggered_symbols:
             record["quiet_windows"] = 0
@@ -1208,43 +1592,108 @@ def run_cycle(
     scan_limit: int | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
+    cycle_started = time.monotonic()
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     window = closed_window(interval_sec=900, delay_sec=cfg.close_delay_sec)
     store = JsonStore(settings.data_dir)
     state = _load_state(store, _state_path(cfg, settings))
-    effective_scan_limit = max(1, scan_limit or cfg.scan_limit)
-    source = BinanceDataSource(
-        settings,
-        oi_hist_budget=max(
-            settings.oi_hist_budget,
-            effective_scan_limit + PULSE_CHART_KLINE_RESERVE,
-        ),
+    effective_scan_limit = max(
+        0,
+        int(cfg.scan_limit if scan_limit is None else scan_limit),
     )
+    source = BinanceDataSource(settings)
     diagnostics: dict[str, Any] = {}
     try:
         try:
-            market_caps = source.market_caps() or {}
+            raw_market_caps = source.market_caps() or {}
         except Exception:
-            market_caps = {}
-        pool = _candidate_pool(
+            raw_market_caps = {}
+        if not isinstance(raw_market_caps, Mapping):
+            raw_market_caps = {}
+        market_caps = {
+            str(base).upper(): value
+            for base, value in raw_market_caps.items()
+        }
+        market_cap_sources = {
+            str(base).upper(): "Binance市场资料"
+            for base in market_caps
+        }
+        try:
+            fallback_market_caps = source.coinpaprika_market_caps() or {}
+        except Exception:
+            fallback_market_caps = {}
+        if not isinstance(fallback_market_caps, Mapping):
+            fallback_market_caps = {}
+        for base, value in fallback_market_caps.items():
+            normalized_base = str(base).upper()
+            if normalized_base not in market_caps:
+                market_caps[normalized_base] = value
+                market_cap_sources[normalized_base] = "CoinPaprika备用市值"
+        pool, universe = _candidate_pool(
             source, cfg, effective_scan_limit,
             window_index=int(window.end_ms // _15M_MS),
+            market_caps=market_caps,
+            market_cap_sources=market_cap_sources,
         )
-        analyzed: list[dict[str, Any]] = []
-        for symbol in pool:
-            item = _analyze_symbol(source, symbol, window.end_ms, cfg)
-            if item and item.get("template"):
-                item["market_cap"] = market_caps.get(item["base"])
-                analyzed.append(item)
-        for item in analyzed:
+        analysis_budget = len(pool)
+        if hasattr(source, "budget"):
+            source.budget.ensure_limit(
+                "open_interest_hist",
+                max(
+                    settings.oi_hist_budget,
+                    analysis_budget + PULSE_CHART_KLINE_RESERVE,
+                ),
+            )
+            source.budget.ensure_limit(
+                "klines",
+                max(
+                    settings.kline_budget,
+                    analysis_budget + PULSE_CHART_KLINE_RESERVE,
+                ),
+            )
+            source.budget.ensure_limit(
+                "spot_klines",
+                max(settings.kline_budget, analysis_budget),
+            )
+        completed: list[dict[str, Any]] = []
+        triggered: list[dict[str, Any]] = []
+        worker_count = min(max(1, cfg.scan_workers), max(1, len(pool)))
+        if pool:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="pulse-scan",
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        _analyze_symbol,
+                        source,
+                        candidate,
+                        window.end_ms,
+                        cfg,
+                    ): candidate.symbol
+                    for candidate in pool
+                }
+                for future in as_completed(futures):
+                    try:
+                        item = future.result()
+                    except Exception:
+                        item = None
+                    if item is None:
+                        continue
+                    completed.append(item)
+                    if item.get("template"):
+                        triggered.append(item)
+        completed.sort(key=lambda item: str(item.get("symbol") or ""))
+        triggered.sort(key=lambda item: str(item.get("symbol") or ""))
+        for item in triggered:
             item["long_short_ratio"] = _long_short_ratio(source, item["symbol"])
             item["tv_url"] = f"https://www.tradingview.com/chart/?symbol=BINANCE:{item['symbol']}"
             item["cg_url"] = f"https://www.coinglass.com/tv/zh/Binance_{item['symbol']}"
 
-        triggered_symbols = {str(item["symbol"]) for item in analyzed}
+        triggered_symbols = {str(item["symbol"]) for item in triggered}
         pushes: list[dict[str, Any]] = []
         review_items: list[dict[str, Any]] = []
-        for item in analyzed:
+        for item in triggered:
             action = _follow_action(state, item, cfg, now_ts)
             if action is None:
                 continue
@@ -1312,7 +1761,12 @@ def run_cycle(
                     "message_id": result.message_ids[0],
                 })
         if send and confirm_real_send:
-            _tick_quiet(state, triggered_symbols, cfg)
+            _tick_quiet(
+                state,
+                triggered_symbols,
+                {str(item.get("symbol") or "") for item in completed},
+                cfg,
+            )
             _prune_expired(state, now_ts, cfg.follow_window_sec)
             _save_state(store, _state_path(cfg, settings), state)
         if review_items:
@@ -1321,13 +1775,30 @@ def run_cycle(
                 record_signals(settings, review_items)
             except Exception as exc:
                 print(f"[review] record failed {type(exc).__name__}", file=sys.stderr)
+        duration_sec = round(time.monotonic() - cycle_started, 3)
+        complete_coverage = bool(
+            universe.get("full_coverage")
+            and len(completed) == len(pool)
+            and duration_sec < 15 * 60
+        )
         diagnostics = {
             "window_end": window.end.strftime("%Y-%m-%d %H:%M:%S"),
             "scan_limit": effective_scan_limit,
-            "kline_budget": int(settings.kline_budget),
+            "scan_mode": (
+                "all_eligible_crypto"
+                if effective_scan_limit == 0
+                else "manual_cap"
+            ),
             "chart_kline_reserve": PULSE_CHART_KLINE_RESERVE,
+            "scan_workers": worker_count,
             "scanned": len(pool),
-            "triggered": len(analyzed),
+            "analysis_completed": len(completed),
+            "analysis_failed": len(pool) - len(completed),
+            "triggered": len(triggered),
+            "coverage_status": "complete" if complete_coverage else "partial",
+            "completed_within_15m": duration_sec < 15 * 60,
+            "cycle_duration_sec": duration_sec,
+            "universe": universe,
             "pushes": pushes,
             "state_active_symbols": len(state),
             "source": source.diagnostics(),
@@ -1387,9 +1858,16 @@ def _send_test_push(
     item = {
         "symbol": "CETUSUSDT",
         "base": "CETUS",
-        "tier": "alt",
-        "tier_label": _TIER_LABELS["alt"],
-        "threshold": cfg.threshold_alt_pct,
+        "tier": "low",
+        "tier_label": _MARKET_CAP_TIER_LABELS["low"],
+        "market_cap_tier": "low",
+        "market_cap_tier_label": _MARKET_CAP_TIER_LABELS["low"],
+        "liquidity_tier": "high",
+        "liquidity_tier_label": _LIQUIDITY_TIER_LABELS["high"],
+        "price_threshold": cfg.trigger_thresholds("low", "high")[0],
+        "oi_threshold": cfg.trigger_thresholds("low", "high")[1],
+        "oi_delta_min_usd": cfg.oi_delta_min_usd("high"),
+        "trigger_source": "oi",
         "template": "health_up",
         "current_price": 0.0215,
         "current_oi_usd": 2520000.0,
@@ -1400,6 +1878,7 @@ def _send_test_push(
         "futures_flow": {1: 12000.0, 3: 45000.0, 12: 180000.0, 288: 320000.0},
         "spot_flow": {1: 38000.0, 3: 147000.0, 12: 367100.0, 288: 578000.0},
         "cvd_net_15m": 47000.0,
+        "cvd_required_usd": 5000.0,
         "market_cap": 16600000.0,
         "long_short_ratio": 2.15,
         "tv_url": "https://www.tradingview.com/chart/?symbol=BINANCE:CETUSUSDT",

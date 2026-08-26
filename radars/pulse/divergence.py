@@ -42,7 +42,7 @@ from typing import Any, Mapping, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from config.settings import Settings  # noqa: E402
-from shared.asset_classification import is_stable_crypto_asset  # noqa: E402
+from shared.asset_classification import crypto_contract_eligibility  # noqa: E402
 from shared.binance_data import BinanceDataSource  # noqa: E402
 from shared.storage import JsonStore  # noqa: E402
 from shared.telegram import TelegramGateway  # noqa: E402
@@ -234,16 +234,40 @@ def build_analysis(
     window: Any,
 ) -> dict[str, Any]:
     excluded = {str(item).upper() for item in settings.excluded_base_assets}
+    try:
+        exchange_info = source.exchange_info()
+    except Exception:
+        exchange_info = None
+    contracts = (
+        exchange_info.get("symbols")
+        if isinstance(exchange_info, Mapping)
+        else []
+    )
+    valid_symbols: set[str] = set()
+    rejected_assets: dict[str, int] = {}
+    for contract in contracts if isinstance(contracts, list) else []:
+        if not isinstance(contract, Mapping):
+            continue
+        symbol = str(contract.get("symbol") or "").strip().upper()
+        allowed, reason, _classification = crypto_contract_eligibility(
+            symbol,
+            contract,
+            excluded_base_assets=excluded,
+        )
+        if allowed:
+            valid_symbols.add(symbol)
+        elif (
+            str(contract.get("status") or "").upper() == "TRADING"
+            and str(contract.get("quoteAsset") or "").upper() == "USDT"
+        ):
+            rejected_assets[reason] = rejected_assets.get(reason, 0) + 1
     tickers = source.ticker_24h() or []
     candidates: list[tuple[float, str]] = []
     for ticker in tickers:
         if not isinstance(ticker, Mapping):
             continue
         symbol = str(ticker.get("symbol") or "").strip().upper()
-        if not symbol.endswith("USDT"):
-            continue
-        base = symbol[:-4]
-        if is_stable_crypto_asset(base) or base in excluded:
+        if symbol not in valid_symbols:
             continue
         quote_volume = to_float(ticker.get("quoteVolume"))
         if quote_volume < cfg.min_quote_volume_usd:
@@ -325,6 +349,10 @@ def build_analysis(
         "extreme": extreme,
         "scanned": len(candidates),
         "analyzed": len(items),
+        "asset_universe": {
+            "eligible_crypto_contracts": len(valid_symbols),
+            "rejected": dict(sorted(rejected_assets.items())),
+        },
     }
 
 

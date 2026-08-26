@@ -247,14 +247,14 @@ class EnvSyncTests(unittest.TestCase):
             text = env.read_text(encoding="utf-8")
 
         self.assertIn("PULSE_RADAR_ENABLE=false", text)
-        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=80", text)
+        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=0", text)
         self.assertIn("DIVERGENCE_SCAN_LIMIT=200", text)
         self.assertNotIn("LAUNCH_", text)
         self.assertIn("LAUNCH_ALERT_ENABLE", result["removed"])
         self.assertIn("LAUNCH_SCAN_LIMIT", result["removed"])
         self.assertIn("LAUNCH_FUSION_ENABLE", result["removed"])
 
-    def test_sync_reduces_old_default_scan_limit_to_preserve_chart_budget(self) -> None:
+    def test_sync_migrates_old_default_scan_limit_to_full_coverage(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env.oi"
@@ -265,7 +265,7 @@ class EnvSyncTests(unittest.TestCase):
                 encoding="utf-8",
             )
             example.write_text(
-                "SIMPLE_ALERT_SCAN_LIMIT=80\n"
+                "SIMPLE_ALERT_SCAN_LIMIT=0\n"
                 "KLINE_REQUEST_BUDGET=120\n",
                 encoding="utf-8",
             )
@@ -273,7 +273,7 @@ class EnvSyncTests(unittest.TestCase):
             module.sync_env(env, example)
             text = env.read_text(encoding="utf-8")
 
-        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=80", text)
+        self.assertIn("SIMPLE_ALERT_SCAN_LIMIT=0", text)
         self.assertIn("KLINE_REQUEST_BUDGET=120", text)
 
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
@@ -507,14 +507,14 @@ class PulseReadinessTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("脉冲雷达已启用", output.getvalue())
-            self.assertIn("脉冲扫描上限 15m=80，2h=200", output.getvalue())
+            self.assertIn("脉冲扫描范围 15m=全部合格加密合约，2h=200", output.getvalue())
             self.assertIn(
-                "K线请求预算 120；15m扫描 80 + 图表预留 40 = 120",
+                "细算预算按本轮合格合约动态分配；触发图表额外预留 40 次；跨服务全局限流已启用",
                 output.getvalue(),
             )
             self.assertNotIn("shadow", output.getvalue().lower())
 
-    def test_readiness_blocks_scan_limit_that_consumes_chart_reserve(self) -> None:
+    def test_readiness_blocks_when_cross_service_rate_limit_is_disabled(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = Settings(
@@ -530,6 +530,7 @@ class PulseReadinessTests(unittest.TestCase):
                 tg_topic_routes_path=root / "topic_routes.json",
                 pulse_simple_scan_limit=100,
                 kline_budget=120,
+                binance_global_rate_limit_enable=False,
             )
             store = JsonStore(root)
 
@@ -540,7 +541,7 @@ class PulseReadinessTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("⏳ 待处理 脉冲图表请求余量", output.getvalue())
             self.assertIn(
-                "K线请求预算 120；15m扫描 100 + 图表预留 40 = 140",
+                "跨服务全局限流未启用",
                 output.getvalue(),
             )
 

@@ -150,6 +150,9 @@ class Settings:
     signal_events_db_path: Path = BASE_DIR / "data" / "signals.db"
     market_snapshots_db_path: Path = BASE_DIR / "data" / "market_snapshots.db"
     realtime_features_db_path: Path = BASE_DIR / "data" / "realtime_features.db"
+    binance_coordination_db_path: Path = (
+        BASE_DIR / "data" / "binance_coordination.db"
+    )
     market_snapshot_interval_sec: int = 300
     market_snapshot_retention_days: int = 7
     market_snapshot_limit: int = 500
@@ -190,6 +193,12 @@ class Settings:
     http_cache_enable: bool = True
     http_cache_ttl_sec: int = 10
     http_cache_max_entries: int = 128
+    binance_shared_cache_enable: bool = True
+    binance_global_rate_limit_enable: bool = True
+    binance_futures_weight_per_minute: int = 1200
+    binance_spot_weight_per_minute: int = 3000
+    binance_futures_data_requests_per_5m: int = 800
+    binance_global_rate_limit_max_wait_sec: float = 6.0
     binance_fapi_base_url: str = "https://fapi.binance.com"
     binance_spot_base_url: str = "https://api.binance.com"
     binance_futures_ws_url: str = "wss://fstream.binance.com/market/ws"
@@ -376,7 +385,8 @@ class Settings:
     funding_history_budget: int = 25
     fuse_seconds: int = 15 * 60
 
-    pulse_simple_scan_limit: int = 80
+    # 0 means every eligible crypto contract; a positive value is a manual cap.
+    pulse_simple_scan_limit: int = 0
     pulse_divergence_scan_limit: int = 200
     pulse_radar_enable: bool = True
     topic_message_cleanup_max_age_sec: int = 47 * 3600
@@ -545,6 +555,11 @@ class Settings:
             signal_events_db_path=data_path(data_dir, "SIGNAL_EVENTS_DB_FILE", "signals.db"),
             market_snapshots_db_path=data_path(data_dir, "MARKET_SNAPSHOTS_DB_FILE", "market_snapshots.db"),
             realtime_features_db_path=data_path(data_dir, "REALTIME_FEATURES_DB_FILE", "realtime_features.db"),
+            binance_coordination_db_path=data_path(
+                data_dir,
+                "BINANCE_COORDINATION_DB_FILE",
+                "binance_coordination.db",
+            ),
             market_snapshot_interval_sec=env_int("MARKET_SNAPSHOT_INTERVAL_SEC", 300),
             market_snapshot_retention_days=env_int("MARKET_SNAPSHOT_RETENTION_DAYS", 7),
             market_snapshot_limit=env_int("MARKET_SNAPSHOT_LIMIT", 500),
@@ -587,6 +602,30 @@ class Settings:
             http_cache_enable=env_bool("DATA_SOURCE_CACHE_ENABLE", True),
             http_cache_ttl_sec=env_int("DATA_SOURCE_CACHE_TTL_SEC", 10),
             http_cache_max_entries=env_int("DATA_SOURCE_CACHE_MAX_ENTRIES", 128),
+            binance_shared_cache_enable=env_bool(
+                "BINANCE_SHARED_CACHE_ENABLE",
+                True,
+            ),
+            binance_global_rate_limit_enable=env_bool(
+                "BINANCE_GLOBAL_RATE_LIMIT_ENABLE",
+                True,
+            ),
+            binance_futures_weight_per_minute=env_int(
+                "BINANCE_FUTURES_WEIGHT_PER_MINUTE",
+                1200,
+            ),
+            binance_spot_weight_per_minute=env_int(
+                "BINANCE_SPOT_WEIGHT_PER_MINUTE",
+                3000,
+            ),
+            binance_futures_data_requests_per_5m=env_int(
+                "BINANCE_FUTURES_DATA_REQUESTS_PER_5M",
+                800,
+            ),
+            binance_global_rate_limit_max_wait_sec=env_float(
+                "BINANCE_GLOBAL_RATE_LIMIT_MAX_WAIT_SEC",
+                6.0,
+            ),
             binance_fapi_base_url=os.getenv("BINANCE_FAPI_BASE_URL", "https://fapi.binance.com").rstrip("/"),
             binance_spot_base_url=os.getenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com").rstrip("/"),
             binance_futures_ws_url=os.getenv(
@@ -1114,8 +1153,8 @@ class Settings:
             pulse_simple_scan_limit=reloadable_bounded_int_alias(
                 "SIMPLE_ALERT_SCAN_LIMIT",
                 "LAUNCH_SCAN_LIMIT",
-                80,
-                1,
+                0,
+                0,
                 1000,
             ),
             pulse_divergence_scan_limit=reloadable_bounded_int_alias(
@@ -1441,6 +1480,23 @@ class Settings:
                 "klines": self.kline_budget,
                 "spot_klines": self.kline_budget,
                 "funding_history": self.funding_history_budget,
+                "binance_coordination": {
+                    "global_rate_limit_enabled": (
+                        self.binance_global_rate_limit_enable
+                    ),
+                    "shared_cache_enabled": self.binance_shared_cache_enable,
+                    "futures_weight_per_minute": (
+                        self.binance_futures_weight_per_minute
+                    ),
+                    "spot_weight_per_minute": (
+                        self.binance_spot_weight_per_minute
+                    ),
+                    "futures_data_requests_per_5m": (
+                        self.binance_futures_data_requests_per_5m
+                    ),
+                    "max_wait_sec": self.binance_global_rate_limit_max_wait_sec,
+                    "state_file": str(self.binance_coordination_db_path),
+                },
             },
             "radar": {
                 "enabled": self.radar_summary_enable,
@@ -1515,6 +1571,11 @@ class Settings:
             "pulse": {
                 "enabled": self.pulse_radar_enable,
                 "simple_scan_limit": self.pulse_simple_scan_limit,
+                "simple_scan_mode": (
+                    "all_eligible_crypto"
+                    if self.pulse_simple_scan_limit == 0
+                    else "manual_cap"
+                ),
                 "divergence_scan_limit": self.pulse_divergence_scan_limit,
                 "simple_interval_sec": 15 * 60,
                 "divergence_interval_sec": 2 * 3600,

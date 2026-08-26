@@ -299,7 +299,7 @@ PRODUCTION_TOPIC_TEMPLATE_IDS = (
 DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
-    "TG_LAUNCH_ALERT": "2026-08-25-pulse-radar-ops-v3",
+    "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
     "TG_CONSOLIDATION_BREAKOUT": "2026-08-26-consolidation-breakout-v1",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
@@ -403,10 +403,15 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "",
         "<b>15分钟异动提醒</b>",
         "- 使用完整闭合的5分钟数据，计算15分钟价格、持仓量和主动成交资金流。",
-        "- 默认每轮细算80个候选，并为触发后的K线图额外保留请求额度。",
+        "- 严格只扫描可靠识别的加密货币合约；传统金融、稳定币和未知资产不会进入提醒。",
+        "- 默认完整覆盖24小时成交额不少于100万美元的全部合格合约，不再固定截断为80个。",
+        "- 先按市值分为高/中/低/待补全四档，再按流动性分为高/中/低三档；12个组合使用不同门槛。",
+        "- 价格与持仓分别判定；持仓触发还要求实际OI金额变化达标，CVD同时检查净额和成交量占比。",
+        "- 所有服务共用行情缓存和全局请求限流，细算与触发后图表使用独立预算。",
         "- 信号分为健康上涨、假强背离、空头回补、健康下跌、假弱承接和恐慌杀多。",
         "- 首次触发立即提醒；同一事件只有升级或方向反转才再次发送，最多3次。",
-        "- 提醒附带最近120根1小时已收线K线和成交量图；图表不可用时仍发送完整文字。",
+        "- 标题会明确写出价格触发、持仓触发或双触发，避免把持仓涨幅误写成价格涨跌。",
+        "- 提醒附带已收线价格K线、OI K线和CVD K线；图表不可用时仍发送完整文字。",
         "",
         "<b>2小时持仓价格背离</b>",
         "- 每2小时汇总持仓变化、价格变化与两者背离度。",
