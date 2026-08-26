@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.1.1` 延续 BOT-only 运行时，新增默认关闭、独立话题隔离且可恢复的盘整突破雷达，并修复发布安装变量对服务器测试环境的污染。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。`v2.1.2` 延续 BOT-only 运行时，新增默认关闭、独立话题隔离且可恢复的盘整突破雷达，并修复服务器测试隔离与静态 systemd 单元的发布回滚。
 
 ## 核心功能
 
@@ -154,8 +154,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.1.1
-bash scripts/deploy_tag.sh --tag v2.1.1 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.1.2
+bash scripts/deploy_tag.sh --tag v2.1.2 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

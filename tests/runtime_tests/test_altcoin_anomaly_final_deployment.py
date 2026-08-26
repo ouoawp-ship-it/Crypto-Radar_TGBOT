@@ -110,6 +110,18 @@ class AltcoinAnomalyFinalDeploymentTests(unittest.TestCase):
             deploy,
         )
 
+    def test_release_skips_enable_policy_for_static_oneshot_units(self) -> None:
+        deploy = self.read("scripts/deploy_tag.sh")
+
+        self.assertIn("unit_enable_policy_managed", deploy)
+        self.assertIn('"${HEALTH_SERVICE_NAME}.service"', deploy)
+        self.assertIn('"${BACKUP_SERVICE_NAME}.service"', deploy)
+        self.assertIn('"${CLEANUP_SERVICE_NAME}.service"', deploy)
+        self.assertGreaterEqual(
+            deploy.count('if unit_enable_policy_managed "$unit"; then'),
+            2,
+        )
+
     def test_release_tag_push_runs_the_same_ci_suite(self) -> None:
         workflow = self.read(".github/workflows/tests.yml")
 
@@ -118,12 +130,12 @@ class AltcoinAnomalyFinalDeploymentTests(unittest.TestCase):
         self.assertIn("python -m unittest discover", workflow)
 
     def test_release_version_and_final_runbook_are_consistent(self) -> None:
-        self.assertEqual(self.read("VERSION").strip(), "v2.1.1")
+        self.assertEqual(self.read("VERSION").strip(), "v2.1.2")
         readme = self.read("README.md")
         runbook = self.read("docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md")
 
         self.assertIn("ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md", readme)
-        self.assertIn("deploy_tag.sh --tag v2.1.1 --yes", readme)
+        self.assertIn("deploy_tag.sh --tag v2.1.2 --yes", readme)
         self.assertIn("每个进程只有一个", runbook)
         self.assertIn("不会自动创建该话题", runbook)
         self.assertIn("不代表综合分数、成功率或涨跌概率", runbook)

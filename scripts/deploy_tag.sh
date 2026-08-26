@@ -229,14 +229,27 @@ record_and_stop_units() {
   done
 }
 
+unit_enable_policy_managed() {
+  case "$1" in
+    "${HEALTH_SERVICE_NAME}.service"|"${BACKUP_SERVICE_NAME}.service"|"${CLEANUP_SERVICE_NAME}.service")
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 restore_unit_activity() {
   local state_file="$1" unit active enabled failed=0
   [ -f "$state_file" ] || return 0
   while IFS=$'\t' read -r unit active enabled; do
-    if [ "$enabled" = "1" ]; then
-      run_root systemctl enable "$unit" >/dev/null || failed=1
-    else
-      run_root systemctl disable "$unit" >/dev/null 2>&1 || failed=1
+    if unit_enable_policy_managed "$unit"; then
+      if [ "$enabled" = "1" ]; then
+        run_root systemctl enable "$unit" >/dev/null || failed=1
+      else
+        run_root systemctl disable "$unit" >/dev/null 2>&1 || failed=1
+      fi
     fi
     if [ "$active" = "1" ]; then
       run_root systemctl restart "$unit" || failed=1
@@ -250,11 +263,13 @@ restore_unit_activity() {
 verify_unit_activity() {
   local state_file="$1" unit active enabled
   while IFS=$'\t' read -r unit active enabled; do
-    if [ "$enabled" = "1" ]; then
-      run_root systemctl is-enabled --quiet "$unit" || \
+    if unit_enable_policy_managed "$unit"; then
+      if [ "$enabled" = "1" ]; then
+        run_root systemctl is-enabled --quiet "$unit" || \
+          fail "unit_enabled_state_mismatch"
+      elif run_root systemctl is-enabled --quiet "$unit"; then
         fail "unit_enabled_state_mismatch"
-    elif run_root systemctl is-enabled --quiet "$unit"; then
-      fail "unit_enabled_state_mismatch"
+      fi
     fi
     if [ "$active" = "1" ]; then
       run_root systemctl is-active --quiet "$unit"
