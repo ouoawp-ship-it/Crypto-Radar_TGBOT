@@ -15,6 +15,7 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             settings = Settings(data_dir=Path(tmp))
 
         self.assertFalse(settings.consolidation_breakout_enable)
+        self.assertFalse(settings.consolidation_breakout_three_push_enable)
         self.assertEqual(
             settings.consolidation_breakout_timeframes,
             ("4h", "1d", "1w"),
@@ -34,6 +35,7 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             "CONSOLIDATION_BREAKOUT_TIMEFRAMES": "4h,1d,1w",
             "CONSOLIDATION_BREAKOUT_SCAN_LIMIT": "12",
             "CONSOLIDATION_BREAKOUT_REQUIRE_STRONG_VOLUME": "true",
+            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "true",
         }
         with patch.dict(os.environ, values, clear=True), patch(
             "config.settings.load_env_file",
@@ -51,6 +53,7 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
         self.assertTrue(
             settings.consolidation_breakout_require_strong_volume
         )
+        self.assertTrue(settings.consolidation_breakout_three_push_enable)
         status = settings.redacted_status()
         self.assertTrue(
             status["telegram"]["topic_routes_configured"][

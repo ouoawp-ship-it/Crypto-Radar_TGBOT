@@ -33,6 +33,7 @@ ALLOWLIST = {
     "FUNDING_ALERT_ENABLE": "oi",
     "FLOW_RADAR_ENABLE": "oi",
     "CONSOLIDATION_BREAKOUT_ENABLE": "oi",
+    "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "oi",
     "ANNOUNCEMENT_RISK_ENABLE": "oi",
 }
 SECRET_KEYS = {
@@ -52,6 +53,7 @@ BOOLEAN_KEYS = {
     "FUNDING_ALERT_ENABLE",
     "FLOW_RADAR_ENABLE",
     "CONSOLIDATION_BREAKOUT_ENABLE",
+    "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
     "ANNOUNCEMENT_RISK_ENABLE",
 }
 INTEGER_RANGES: dict[str, tuple[int, int]] = {
@@ -180,6 +182,7 @@ class ConfigManager:
             "FUNDING_ALERT_ENABLE": "true",
             "FLOW_RADAR_ENABLE": "true",
             "CONSOLIDATION_BREAKOUT_ENABLE": "false",
+            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "false",
             "ANNOUNCEMENT_RISK_ENABLE": "true",
         }
         status = {
@@ -495,6 +498,7 @@ class ConfigManager:
             ("FUNDING_ALERT_ENABLE", "true"),
             ("FLOW_RADAR_ENABLE", "true"),
             ("CONSOLIDATION_BREAKOUT_ENABLE", "false"),
+            ("CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE", "false"),
             ("ANNOUNCEMENT_RISK_ENABLE", "true"),
         ):
             raw_switch = values.get(key, default).strip().lower()

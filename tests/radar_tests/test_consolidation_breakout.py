@@ -9,6 +9,9 @@ from config import Settings
 from radars.consolidation_breakout.radar import (
     Candle,
     ConsolidationBreakoutRadar,
+    _detect_three_push_pattern,
+    _step_three_push_track,
+    _three_push_score,
     count_touch_clusters,
 )
 from shared.storage import JsonStore
@@ -62,6 +65,60 @@ def breakout_up(index: int, *, volume: float = 100.0) -> list[Any]:
 
 def breakout_down(index: int, *, volume: float = 100.0) -> list[Any]:
     return kline(index, high=100.0, low=96.0, close=96.4, volume=volume)
+
+
+def three_push_candles(
+    *,
+    bottom: bool = False,
+    hold: int = 12,
+    increasing_volume: bool = False,
+) -> list[Candle]:
+    closes = [100.0] * 60
+    closes += [101, 105, 111, 117, 120]
+    closes += [116, 112, 108, 105] + [105] * hold
+    closes += [106, 108, 110, 112, 114, 116, 118, 121]
+    closes += [117, 113, 110, 107] + [107] * hold
+    closes += [108, 109, 110, 112, 114, 116, 118, 120, 122]
+    closes += [118, 114]
+    if bottom:
+        closes = [200.0 - value for value in closes]
+    candles: list[Candle] = []
+    for index, close in enumerate(closes):
+        open_time = BASE_MS + index * DAY_MS
+        candles.append(Candle(
+            open_time=open_time,
+            open=close,
+            high=close + 0.4,
+            low=close - 0.4,
+            close=close,
+            volume=(
+                100.0 + index * 3.0
+                if increasing_volume
+                else max(100.0, 1_000.0 - index * 3.0)
+            ),
+            close_time=open_time + DAY_MS - 1,
+        ))
+    return candles
+
+
+def rows_from_candles(candles: list[Candle]) -> list[list[Any]]:
+    return [
+        [
+            candle.open_time,
+            str(candle.open),
+            str(candle.high),
+            str(candle.low),
+            str(candle.close),
+            str(candle.volume),
+            candle.close_time,
+            "0",
+            100,
+            "0",
+            "0",
+            "0",
+        ]
+        for candle in candles
+    ]
 
 
 class KlineSource:
@@ -132,6 +189,7 @@ def settings_for(root: Path, **overrides: Any) -> Settings:
         "consolidation_breakout_close_delay_sec": 90,
         "consolidation_breakout_strong_volume_ratio": 1.20,
         "consolidation_breakout_require_strong_volume": False,
+        "consolidation_breakout_three_push_enable": False,
         "consolidation_breakout_max_signals_per_scan": 8,
         "excluded_base_assets": ("XAU", "XAG"),
     }
@@ -630,6 +688,604 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
 
         self.assertEqual(upper, 2)
         self.assertEqual(lower, 2)
+
+    def test_three_push_top_uses_three_confirmed_price_and_macd_peaks(self) -> None:
+        candles = three_push_candles()
+
+        self.assertIsNone(
+            _detect_three_push_pattern(candles, len(candles) - 2)
+        )
+        pattern = _detect_three_push_pattern(candles, len(candles) - 1)
+
+        self.assertIsNotNone(pattern)
+        assert pattern is not None
+        self.assertEqual(pattern["structure"], "top")
+        self.assertEqual(pattern["push_prices"], [120.4, 121.4, 122.4])
+        self.assertGreater(pattern["push_macd"][0], pattern["push_macd"][1])
+        self.assertGreater(pattern["push_macd"][1], pattern["push_macd"][2])
+        self.assertGreater(pattern["neckline"], 0)
+        self.assertGreater(pattern["invalidation"], pattern["push_prices"][-1])
+
+    def test_three_push_bottom_is_the_symmetric_closed_bar_pattern(self) -> None:
+        candles = three_push_candles(bottom=True, increasing_volume=True)
+
+        pattern = _detect_three_push_pattern(candles, len(candles) - 1)
+
+        self.assertIsNotNone(pattern)
+        assert pattern is not None
+        self.assertEqual(pattern["structure"], "bottom")
+        self.assertEqual(pattern["push_prices"], [79.6, 78.6, 77.6])
+        self.assertLess(pattern["push_macd"][0], pattern["push_macd"][1])
+        self.assertLess(pattern["push_macd"][1], pattern["push_macd"][2])
+        self.assertLess(pattern["invalidation"], pattern["push_prices"][-1])
+        self.assertFalse(pattern["volume_progressive_weakening"])
+
+    def test_three_push_rejects_price_only_pattern_without_progressive_macd(self) -> None:
+        candles = three_push_candles(hold=4)
+
+        pattern = _detect_three_push_pattern(candles, len(candles) - 1)
+
+        self.assertIsNone(pattern)
+
+    def test_three_push_volume_weakening_adds_score_but_is_not_required(self) -> None:
+        weakening = _detect_three_push_pattern(
+            three_push_candles(),
+            len(three_push_candles()) - 1,
+        )
+        rising = _detect_three_push_pattern(
+            three_push_candles(increasing_volume=True),
+            len(three_push_candles(increasing_volume=True)) - 1,
+        )
+
+        self.assertIsNotNone(weakening)
+        self.assertIsNotNone(rising)
+        assert weakening is not None and rising is not None
+        weakening["event"] = "three_push_top_forming"
+        rising["event"] = "three_push_top_forming"
+        self.assertGreater(_three_push_score(weakening), _three_push_score(rising))
+
+    def test_three_push_forms_then_confirms_once_after_neckline_close(self) -> None:
+        candles = three_push_candles()
+        track, forming = _step_three_push_track(
+            {},
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNotNone(forming)
+        assert forming is not None
+        self.assertEqual(forming["event"], "three_push_top_forming")
+        neckline = float(forming["neckline"])
+        atr = float(forming["atr"])
+        index = len(candles)
+        open_time = BASE_MS + index * DAY_MS
+        candles.append(Candle(
+            open_time=open_time,
+            open=neckline,
+            high=neckline + 0.4,
+            low=neckline - atr,
+            close=neckline,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+
+        wick_track, wick_only = _step_three_push_track(
+            track,
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNone(wick_only)
+        self.assertIsNotNone(wick_track["setup"])
+
+        index += 1
+        open_time = BASE_MS + index * DAY_MS
+        candles.append(Candle(
+            open_time=open_time,
+            open=neckline,
+            high=neckline + 0.4,
+            low=neckline - atr - 0.4,
+            close=neckline - atr,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+        confirmed_track, confirmed = _step_three_push_track(
+            wick_track,
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNotNone(confirmed)
+        assert confirmed is not None
+        self.assertEqual(confirmed["event"], "three_push_top_confirmed")
+        self.assertIsNone(confirmed_track["setup"])
+
+        index += 1
+        open_time = BASE_MS + index * DAY_MS
+        candles.append(Candle(
+            open_time=open_time,
+            open=neckline - 1.0,
+            high=neckline,
+            low=neckline - 2.0,
+            close=neckline - 1.5,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+        _finished, repeated = _step_three_push_track(
+            confirmed_track,
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNone(repeated)
+
+    def test_three_push_bottom_confirms_on_buffered_neckline_close(self) -> None:
+        candles = three_push_candles(bottom=True, increasing_volume=True)
+        track, forming = _step_three_push_track(
+            {},
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNotNone(forming)
+        assert forming is not None
+        self.assertEqual(forming["event"], "three_push_bottom_forming")
+        neckline = float(forming["neckline"])
+        atr = float(forming["atr"])
+        index = len(candles)
+        open_time = BASE_MS + index * DAY_MS
+        close = neckline + atr
+        candles.append(Candle(
+            open_time=open_time,
+            open=candles[-1].close,
+            high=close + 0.4,
+            low=min(candles[-1].close, close) - 0.4,
+            close=close,
+            volume=2_000.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+
+        _confirmed_track, confirmed = _step_three_push_track(
+            track,
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNotNone(confirmed)
+        assert confirmed is not None
+        self.assertEqual(confirmed["event"], "three_push_bottom_confirmed")
+
+    def test_three_push_build_waits_for_closed_confirmation_bar(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            before_close = (
+                int(rows[-1][6])
+                + settings.consolidation_breakout_close_delay_sec * 1000
+                - 1
+            )
+
+            open_result = radar.build(
+                KlineSource(rows),
+                now_ms=before_close,
+            )  # type: ignore[arg-type]
+            radar.commit(open_result, [])
+            closed_result = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+
+            self.assertEqual(open_result["events"], [])
+            three_push_events = [
+                event
+                for event in closed_result["events"]
+                if event["event"].startswith("three_push_")
+            ]
+            self.assertEqual(len(three_push_events), 1)
+            self.assertEqual(
+                three_push_events[0]["event"],
+                "three_push_top_forming",
+            )
+            self.assertIn("右侧2根闭合K线", three_push_events[0]["text"])
+
+    def test_three_push_delivery_replays_forming_and_confirmed_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+
+            forming = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            forming_event = next(
+                event
+                for event in forming["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+            radar.commit(forming, [])
+            replay = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            replay_event = next(
+                event
+                for event in replay["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+            self.assertEqual(replay_event["event_id"], forming_event["event_id"])
+
+            radar.commit(replay, [replay_event["event_id"]])
+            accepted = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in accepted["events"]
+            ))
+
+            neckline = float(forming_event["neckline"])
+            atr = float(forming_event["atr"])
+            index = len(candles)
+            open_time = BASE_MS + index * DAY_MS
+            close = neckline - atr
+            candles.append(Candle(
+                open_time=open_time,
+                open=candles[-1].close,
+                high=max(candles[-1].close, close) + 0.4,
+                low=close - 0.4,
+                close=close,
+                volume=100.0,
+                close_time=open_time + DAY_MS - 1,
+            ))
+            rows = rows_from_candles(candles)
+            confirmed = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            confirmed_event = next(
+                event
+                for event in confirmed["events"]
+                if event["event"] == "three_push_top_confirmed"
+            )
+            radar.commit(confirmed, [])
+            confirmed_replay = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            replayed_confirmation = next(
+                event
+                for event in confirmed_replay["events"]
+                if event["event"] == "three_push_top_confirmed"
+            )
+            self.assertEqual(
+                replayed_confirmation["event_id"],
+                confirmed_event["event_id"],
+            )
+
+            radar.commit(
+                confirmed_replay,
+                [replayed_confirmation["event_id"]],
+            )
+            finished = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in finished["events"]
+            ))
+            state = JsonStore(root).load(
+                settings.consolidation_breakout_state_path,
+                {},
+            )
+            track = state["tracks"]["TESTUSDT|1d|three_push"]
+            self.assertIsNone(track["setup"])
+            self.assertEqual(
+                track["last_pattern_id"],
+                forming_event["pattern_id"],
+            )
+
+    def test_unaccepted_first_three_push_replays_after_a_new_closed_bar(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            first = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            first_event = next(
+                event
+                for event in first["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+            radar.commit(first, [])
+            saved = store.load(settings.consolidation_breakout_state_path, {})
+            self.assertEqual(
+                saved["tracks"]["TESTUSDT|1d|three_push"]["last_close_time"],
+                candles[-2].close_time,
+            )
+
+            index = len(candles)
+            open_time = BASE_MS + index * DAY_MS
+            candles.append(Candle(
+                open_time=open_time,
+                open=114.0,
+                high=114.4,
+                low=113.6,
+                close=114.0,
+                volume=100.0,
+                close_time=open_time + DAY_MS - 1,
+            ))
+            rows = rows_from_candles(candles)
+            replay = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            replayed_event = next(
+                event
+                for event in replay["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+
+            self.assertEqual(replayed_event["event_id"], first_event["event_id"])
+
+    def test_corrupted_three_push_setup_is_discarded_without_stopping_scan(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            index = len(candles)
+            open_time = BASE_MS + index * DAY_MS
+            candles.append(Candle(
+                open_time=open_time,
+                open=114.0,
+                high=114.4,
+                low=113.6,
+                close=114.0,
+                volume=100.0,
+                close_time=open_time + DAY_MS - 1,
+            ))
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            key = "TESTUSDT|1d|three_push"
+            store.save(settings.consolidation_breakout_state_path, {
+                "schema_version": 1,
+                "tracks": {
+                    key: {
+                        "last_close_time": candles[-2].close_time,
+                        "setup": {
+                            "structure": "top",
+                            "bars_since": "damaged",
+                            "neckline": 106.6,
+                            "invalidation": 123.0,
+                            "atr": 1.0,
+                        },
+                    },
+                },
+                "rotation": {"after_symbol": "", "round": 1},
+            })
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            result = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            committed = radar.commit(result, [])
+            saved = store.load(settings.consolidation_breakout_state_path, {})
+
+            self.assertEqual(result["events"], [])
+            self.assertEqual(result["diagnostics"]["status"], "degraded")
+            self.assertEqual(
+                result["diagnostics"]["three_push_state_recoveries"],
+                1,
+            )
+            self.assertEqual(committed["status"], "ok")
+            self.assertIsNone(saved["tracks"][key]["setup"])
+
+    def test_three_push_replay_freezes_box_context_score_and_text(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.consolidation_breakout_state_path, {
+                "schema_version": 1,
+                "tracks": {
+                    "TESTUSDT|1d|long": {
+                        "last_close_time": candles[-2].close_time,
+                        "box": {
+                            "upper": 122.0,
+                            "lower": 100.0,
+                            "atr": 1.0,
+                            "width_atr": 22.0,
+                            "width_pct": 19.82,
+                            "efficiency": 0.1,
+                            "upper_touches": 2,
+                            "lower_touches": 2,
+                            "formed_close_time": candles[-2].close_time,
+                            "active_bars": 0,
+                            "base_bars": 240,
+                            "upper_sweep_sent": False,
+                            "lower_sweep_sent": False,
+                        },
+                        "breakout": None,
+                        "cooldown_until": 0,
+                    },
+                },
+                "rotation": {"after_symbol": "", "round": 1},
+            })
+            radar = ConsolidationBreakoutRadar(settings, store)
+            rows = rows_from_candles(candles)
+            result = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            first = next(
+                event
+                for event in result["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+            expected = (
+                first["event_id"],
+                first["score"],
+                first["text"],
+                first["box_horizon"],
+            )
+
+            for _attempt in range(2):
+                radar.commit(result, [])
+                index = len(candles)
+                open_time = BASE_MS + index * DAY_MS
+                candles.append(Candle(
+                    open_time=open_time,
+                    open=114.0,
+                    high=114.4,
+                    low=113.6,
+                    close=114.0,
+                    volume=100.0,
+                    close_time=open_time + DAY_MS - 1,
+                ))
+                rows = rows_from_candles(candles)
+                result = radar.build(
+                    KlineSource(rows),
+                    now_ms=closed_now(rows),
+                )  # type: ignore[arg-type]
+                replay = next(
+                    event
+                    for event in result["events"]
+                    if event["event"] == "three_push_top_forming"
+                )
+                self.assertEqual(
+                    (
+                        replay["event_id"],
+                        replay["score"],
+                        replay["text"],
+                        replay["box_horizon"],
+                    ),
+                    expected,
+                )
+
+    def test_range_and_three_push_events_commit_independently(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            last = candles[-1]
+            candles[-1] = Candle(
+                open_time=last.open_time,
+                open=last.open,
+                high=116.0,
+                low=last.low,
+                close=last.close,
+                volume=last.volume,
+                close_time=last.close_time,
+            )
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.consolidation_breakout_state_path, {
+                "schema_version": 1,
+                "tracks": {
+                    "TESTUSDT|1d|long": {
+                        "last_close_time": candles[-2].close_time,
+                        "box": {
+                            "upper": 115.0,
+                            "lower": 100.0,
+                            "atr": 1.0,
+                            "width_atr": 15.0,
+                            "width_pct": 13.95,
+                            "efficiency": 0.1,
+                            "upper_touches": 2,
+                            "lower_touches": 2,
+                            "formed_close_time": candles[-2].close_time,
+                            "active_bars": 0,
+                            "base_bars": 240,
+                            "upper_sweep_sent": False,
+                            "lower_sweep_sent": False,
+                        },
+                        "breakout": None,
+                        "cooldown_until": 0,
+                    },
+                },
+                "rotation": {"after_symbol": "", "round": 1},
+            })
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            first = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            by_name = {event["event"]: event for event in first["events"]}
+            self.assertIn("upper_sweep", by_name)
+            self.assertIn("three_push_top_forming", by_name)
+            self.assertEqual(
+                [event["event"] for event in first["events"][:2]],
+                ["three_push_top_forming", "upper_sweep"],
+            )
+            self.assertEqual(sum(
+                event["event"].startswith("three_push_")
+                for event in first["events"]
+            ), 1)
+
+            capped_settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+                consolidation_breakout_max_signals_per_scan=1,
+            )
+            capped_radar = ConsolidationBreakoutRadar(capped_settings, store)
+            capped = capped_radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertEqual(
+                [event["event"] for event in capped["events"]],
+                ["three_push_top_forming"],
+            )
+            self.assertEqual(capped["diagnostics"]["withheld_event_count"], 1)
+
+            three_push_id = capped["events"][0]["event_id"]
+            capped_radar.commit(capped, [three_push_id])
+            second = capped_radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertEqual(
+                [event["event"] for event in second["events"]],
+                ["upper_sweep"],
+            )
+
+            capped_radar.commit(second, [second["events"][0]["event_id"]])
+            finished = capped_radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertEqual(finished["events"], [])
 
     def test_open_candle_is_strictly_excluded(self) -> None:
         with TemporaryDirectory() as tmp:

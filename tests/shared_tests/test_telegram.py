@@ -1421,6 +1421,32 @@ class TelegramGatewayTests(unittest.TestCase):
                 TOPIC_INTRO_VERSIONS["TG_LAUNCH_ALERT"],
             )
 
+    def test_consolidation_topic_intro_explains_three_push_divergence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            intro = topic_intro_message(
+                "TG_CONSOLIDATION_BREAKOUT",
+                Settings(
+                    data_dir=Path(tmp),
+                    consolidation_breakout_three_push_enable=True,
+                ),
+            )
+
+            for phrase in (
+                "三推顶 / 三推底形成中",
+                "标准MACD峰谷逐次减弱",
+                "形成后12根内",
+                "左右各2根闭合K线确认枢轴",
+                "成交量衰减只加分，不作为硬门槛",
+                "不会因短/中/长期三个箱体重复",
+                "三推背离独立开关当前已启用",
+            ):
+                self.assertIn(phrase, intro)
+            self.assertEqual(
+                topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
+                "2026-08-28-consolidation-breakout-v3",
+            )
+            self.assertLessEqual(len(plain_fallback(intro)), 4096)
+
     def test_remaining_alert_topic_intros_hold_static_guidance(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(data_dir=Path(tmp))
