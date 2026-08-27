@@ -6,8 +6,10 @@ TradingView Webhook，也不会启动新的 Web 服务。它复用项目现有�
 
 ## 它会找什么
 
-默认扫描 Binance USDⓈ-M 24 小时成交额靠前的 24 个 USDT 永续合约，使用
-4H、日线和周线已闭合 K 线。每个周期同时检查三种箱体：
+默认候选池覆盖 Binance USDⓈ-M 全部活跃 USDT 永续合约，不再按 24 小时
+成交额淘汰长尾标的。雷达按合约代码稳定轮转，每批扫描 40 个标的的 4H、
+日线和周线已闭合 K 线；轮转游标持久化，进程重启后会从上一批继续。
+每个周期同时检查三种箱体：
 
 - 短期：24 根 K 线。
 - 中期：72 根 K 线。
@@ -81,10 +83,10 @@ CONSOLIDATION_BREAKOUT_ENABLE=true
 
 ```dotenv
 CONSOLIDATION_BREAKOUT_ENABLE=false
-CONSOLIDATION_BREAKOUT_INTERVAL_SEC=900
+CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300
 CONSOLIDATION_BREAKOUT_CLOSE_DELAY_SEC=90
-CONSOLIDATION_BREAKOUT_SCAN_LIMIT=24
-CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=5000000
+CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40
+CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0
 CONSOLIDATION_BREAKOUT_TIMEFRAMES=4h,1d,1w
 CONSOLIDATION_BREAKOUT_STRONG_VOLUME_RATIO=1.20
 CONSOLIDATION_BREAKOUT_REQUIRE_STRONG_VOLUME=false
@@ -92,8 +94,14 @@ CONSOLIDATION_BREAKOUT_MAX_SIGNALS_PER_SCAN=8
 CONSOLIDATION_BREAKOUT_STATE_FILE=consolidation_breakout_state.json
 ```
 
-- 扫描上限最大建议保持在 40 以内。默认 24 个标的 × 3 个周期 = 72 次 K 线
-  请求，低于默认每轮 120 次预算。
+- `SCAN_LIMIT` 是每批数量，不是全市场候选池上限。默认 40 个标的 × 3 个周期
+  = 120 次 K 线请求，恰好处于默认每轮预算内；即使命令行填得更大，实际批量
+  也会按 K 线预算和周期数自动收紧。
+- `MIN_QUOTE_VOLUME=0` 表示不以 24 小时成交额过滤活跃合约。若人工设置为正数，
+  才会恢复成交额下限过滤。
+- 一次完整覆盖耗时约为 `向上取整(活跃合约数 / 每批数量) × 调度间隔`。例如约
+  520 个合约、每批 40 个、每 5 分钟一批，大约 70 分钟扫完整个市场。
+- 候选池按代码排序，不受成交额排名变化影响；每轮扫到末尾后，下一轮才从头开始。
 - `REQUIRE_STRONG_VOLUME=true` 时，普通突破仍会改变内部结构状态，但只有达到
   量能门槛的突破会推送；假突破、回踩和扫盘不受此开关影响。
 - 收线延迟用于避开交易所边界附近尚未最终确认的数据；算法还会再次按
@@ -101,7 +109,7 @@ CONSOLIDATION_BREAKOUT_STATE_FILE=consolidation_breakout_state.json
 - 每轮推送上限只限制 Telegram 事件，超出部分不会被标记为已处理，会在后续
   轮次重试。
 
-临时缩小扫描范围：
+临时缩小单批扫描数量：
 
 ```bash
 .venv/bin/python main.py consolidation-breakout \
@@ -124,9 +132,11 @@ CONSOLIDATION_BREAKOUT_STATE_FILE=consolidation_breakout_state.json
 .venv/bin/python main.py runtime-status
 ```
 
-状态文件为 `data/consolidation_breakout_state.json`。只有无待发送事件的普通状态
-更新，或已经真实发送成功/由 Telegram 历史确认重复的事件，才会提交。发送失败、
-话题阻断、全局限流和 Dry-run 都不会消费对应事件。
+状态文件为 `data/consolidation_breakout_state.json`。轮转游标与信号状态分开提交：
+当前批次尝试完成后会推进游标，避免单个异常标的或发送故障卡住整个市场；只有无
+待发送事件的普通箱体状态，或已经真实发送成功/由 Telegram 历史确认重复的事件
+状态，才会提交。发送失败、话题阻断、全局限流和 Dry-run 都不会消费对应事件；
+该标的下一轮再次覆盖时仍可重放。
 
 如需立即停用自动调度，只修改：
 

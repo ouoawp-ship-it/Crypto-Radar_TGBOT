@@ -402,7 +402,7 @@ def build_market_radar_runtime_status(
             ),
             scanned_count=(
                 _nonnegative_int(
-                    consolidation_diagnostics.get("scanned_pairs")
+                    consolidation_diagnostics.get("scanned_symbol_count")
                 )
                 or len(consolidation_entries)
             ),

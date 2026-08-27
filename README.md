@@ -108,7 +108,7 @@ python main.py live --send --confirm-real-send
 
 盘整突破雷达使用独立模板 `TG_CONSOLIDATION_BREAKOUT` 和严格话题路由，升级后
 默认关闭，不会改变现有生产流量。首次启用、创建专属话题、数百日箱体口径、
-假突破状态机和回滚方式见
+全市场轮转、假突破状态机和回滚方式见
 [盘整突破雷达说明](docs/CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
 `telegram-topic-refresh` 只刷新已经存在的话题，不会创建新话题；说明版本和
@@ -161,8 +161,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.2.1
-bash scripts/deploy_tag.sh --tag v2.2.1 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.3.0
+bash scripts/deploy_tag.sh --tag v2.3.0 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

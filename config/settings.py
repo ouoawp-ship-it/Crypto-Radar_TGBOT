@@ -340,10 +340,10 @@ class Settings:
     # disabled by default so an upgrade cannot add traffic or Telegram pushes
     # to an existing production deployment without an explicit opt-in.
     consolidation_breakout_enable: bool = False
-    consolidation_breakout_interval_sec: int = 15 * 60
+    consolidation_breakout_interval_sec: int = 5 * 60
     consolidation_breakout_close_delay_sec: int = 90
-    consolidation_breakout_scan_limit: int = 24
-    consolidation_breakout_min_quote_volume: float = 5_000_000
+    consolidation_breakout_scan_limit: int = 40
+    consolidation_breakout_min_quote_volume: float = 0
     consolidation_breakout_timeframes: tuple[str, ...] = ("4h", "1d", "1w")
     consolidation_breakout_strong_volume_ratio: float = 1.20
     consolidation_breakout_require_strong_volume: bool = False
@@ -1060,7 +1060,7 @@ class Settings:
             ),
             consolidation_breakout_interval_sec=env_bounded_int(
                 "CONSOLIDATION_BREAKOUT_INTERVAL_SEC",
-                15 * 60,
+                5 * 60,
                 60,
                 24 * 3600,
             ),
@@ -1072,13 +1072,13 @@ class Settings:
             ),
             consolidation_breakout_scan_limit=env_bounded_int(
                 "CONSOLIDATION_BREAKOUT_SCAN_LIMIT",
-                24,
+                40,
                 1,
                 40,
             ),
             consolidation_breakout_min_quote_volume=env_float(
                 "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME",
-                5_000_000,
+                0,
             ),
             consolidation_breakout_timeframes=tuple(
                 item.lower()
@@ -1526,8 +1526,10 @@ class Settings:
             },
             "consolidation_breakout": {
                 "enabled": self.consolidation_breakout_enable,
+                "coverage_mode": "full_market_rotation",
                 "interval_sec": self.consolidation_breakout_interval_sec,
                 "close_delay_sec": self.consolidation_breakout_close_delay_sec,
+                "batch_size": self.consolidation_breakout_scan_limit,
                 "scan_limit": self.consolidation_breakout_scan_limit,
                 "min_quote_volume": (
                     self.consolidation_breakout_min_quote_volume

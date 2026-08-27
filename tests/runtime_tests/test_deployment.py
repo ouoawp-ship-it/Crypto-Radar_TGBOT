@@ -296,6 +296,66 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000", text)
         self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME", result["updated"])
 
+    def test_sync_migrates_old_consolidation_defaults_to_full_market_rotation(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=900\n"
+                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=24\n"
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=5000000\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300\n"
+                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40\n"
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300", text)
+        self.assertIn("CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40", text)
+        self.assertIn("CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0", text)
+        self.assertTrue({
+            "CONSOLIDATION_BREAKOUT_INTERVAL_SEC",
+            "CONSOLIDATION_BREAKOUT_SCAN_LIMIT",
+            "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME",
+        }.issubset(set(result["updated"])))
+
+    def test_sync_preserves_custom_consolidation_rotation_values(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text(
+                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=600\n"
+                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=32\n"
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=123456\n",
+                encoding="utf-8",
+            )
+            example.write_text(
+                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300\n"
+                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40\n"
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0\n",
+                encoding="utf-8",
+            )
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("CONSOLIDATION_BREAKOUT_INTERVAL_SEC=600", text)
+        self.assertIn("CONSOLIDATION_BREAKOUT_SCAN_LIMIT=32", text)
+        self.assertIn("CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=123456", text)
+        self.assertFalse({
+            "CONSOLIDATION_BREAKOUT_INTERVAL_SEC",
+            "CONSOLIDATION_BREAKOUT_SCAN_LIMIT",
+            "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME",
+        } & set(result["updated"]))
+
     def test_sync_preserves_custom_pulse_liquidity_floor(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:

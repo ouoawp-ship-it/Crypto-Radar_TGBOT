@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -610,13 +611,31 @@ class ConsolidationBreakoutRadar:
     def _load_state(self) -> dict[str, Any]:
         raw = self.store.load(self.state_path, {})
         if not isinstance(raw, dict) or raw.get("schema_version") != STATE_SCHEMA_VERSION:
-            return {"schema_version": STATE_SCHEMA_VERSION, "tracks": {}}
+            return {
+                "schema_version": STATE_SCHEMA_VERSION,
+                "tracks": {},
+                "rotation": {"after_symbol": "", "round": 1},
+            }
         tracks = raw.get("tracks")
         if not isinstance(tracks, dict):
-            return {"schema_version": STATE_SCHEMA_VERSION, "tracks": {}}
-        return {"schema_version": STATE_SCHEMA_VERSION, "tracks": tracks}
+            tracks = {}
+        raw_rotation = raw.get("rotation")
+        rotation = raw_rotation if isinstance(raw_rotation, dict) else {}
+        after_symbol = str(rotation.get("after_symbol") or "").strip().upper()
+        try:
+            round_number = max(1, int(rotation.get("round") or 1))
+        except (TypeError, ValueError, OverflowError):
+            round_number = 1
+        return {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "tracks": tracks,
+            "rotation": {
+                "after_symbol": after_symbol,
+                "round": round_number,
+            },
+        }
 
-    def _candidates(self, source: BinanceDataSource) -> list[str]:
+    def _universe(self, source: BinanceDataSource) -> list[str]:
         valid = {
             str(item.get("symbol") or "").upper()
             for item in source.usdt_perp_symbols()
@@ -628,24 +647,77 @@ class ConsolidationBreakoutRadar:
         }
         minimum = max(
             0.0,
-            _to_float(getattr(self.settings, "consolidation_breakout_min_quote_volume", 5_000_000)),
+            _to_float(getattr(self.settings, "consolidation_breakout_min_quote_volume", 0)),
         )
-        rows: list[tuple[str, float]] = []
+        eligible = {
+            symbol
+            for symbol in valid
+            if symbol[:-4] not in excluded
+        }
+        if minimum <= 0:
+            return sorted(eligible)
+
+        volumes: dict[str, float] = {}
         for item in source.ticker_24h():
             if not isinstance(item, dict):
                 continue
             symbol = str(item.get("symbol") or "").upper()
-            if symbol not in valid or not symbol.endswith("USDT"):
-                continue
-            if symbol[:-4] in excluded:
+            if symbol not in eligible:
                 continue
             quote_volume = _to_float(item.get("quoteVolume"))
-            if quote_volume < minimum:
-                continue
-            rows.append((symbol, quote_volume))
-        rows.sort(key=lambda item: (-item[1], item[0]))
-        limit = max(0, int(getattr(self.settings, "consolidation_breakout_scan_limit", 24)))
-        return [symbol for symbol, _volume in rows[:limit]]
+            volumes[symbol] = max(volumes.get(symbol, 0.0), quote_volume)
+        return sorted(
+            symbol
+            for symbol in eligible
+            if volumes.get(symbol, 0.0) >= minimum
+        )
+
+    def _rotation_batch(
+        self,
+        universe: list[str],
+        state: dict[str, Any],
+        *,
+        batch_limit: int,
+    ) -> tuple[list[str], dict[str, Any] | None, dict[str, Any]]:
+        if not universe:
+            return [], None, {
+                "coverage_mode": "full_market_rotation",
+                "universe_count": 0,
+                "rotation_round": 0,
+                "remaining_in_round": 0,
+                "round_completed": False,
+            }
+
+        limit = max(1, int(batch_limit))
+        raw_rotation = state.get("rotation")
+        rotation = raw_rotation if isinstance(raw_rotation, dict) else {}
+        after_symbol = str(rotation.get("after_symbol") or "").strip().upper()
+        try:
+            round_number = max(1, int(rotation.get("round") or 1))
+        except (TypeError, ValueError, OverflowError):
+            round_number = 1
+
+        start = bisect_right(universe, after_symbol) if after_symbol else 0
+        if after_symbol and start >= len(universe):
+            start = 0
+            round_number += 1
+        end = min(len(universe), start + limit)
+        batch = universe[start:end]
+        round_completed = bool(batch) and end >= len(universe)
+        next_rotation = {
+            "after_symbol": "" if round_completed else batch[-1],
+            "round": round_number + 1 if round_completed else round_number,
+        }
+        diagnostics = {
+            "coverage_mode": "full_market_rotation",
+            "universe_count": len(universe),
+            "rotation_round": round_number,
+            "rotation_start_symbol": batch[0],
+            "rotation_end_symbol": batch[-1],
+            "remaining_in_round": max(0, len(universe) - end),
+            "round_completed": round_completed,
+        }
+        return batch, next_rotation, diagnostics
 
     def build(
         self,
@@ -654,7 +726,7 @@ class ConsolidationBreakoutRadar:
     ) -> dict[str, Any]:
         if not bool(getattr(self.settings, "consolidation_breakout_enable", False)):
             return self._empty_result("disabled")
-        if int(getattr(self.settings, "consolidation_breakout_scan_limit", 24)) <= 0:
+        if int(getattr(self.settings, "consolidation_breakout_scan_limit", 40)) <= 0:
             return self._empty_result("scan_limit_zero")
 
         observed_now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
@@ -671,20 +743,41 @@ class ConsolidationBreakoutRadar:
         if not timeframes:
             return self._empty_result("no_valid_timeframes")
 
+        configured_batch_limit = max(
+            1,
+            int(getattr(self.settings, "consolidation_breakout_scan_limit", 40)),
+        )
+        kline_budget = max(0, int(getattr(self.settings, "kline_budget", 120)))
+        budget_batch_limit = kline_budget // len(timeframes)
+        if budget_batch_limit <= 0:
+            result = self._empty_result("kline_budget_too_small")
+            result["diagnostics"].update({
+                "timeframes": list(timeframes),
+                "kline_budget": kline_budget,
+            })
+            return result
+        effective_batch_limit = min(configured_batch_limit, budget_batch_limit)
+
+        state = self._load_state()
         try:
-            symbols = self._candidates(source)
+            universe = self._universe(source)
         except Exception as exc:
             result = self._empty_result("candidate_source_error")
             result["diagnostics"]["error"] = type(exc).__name__
             return result
+        symbols, rotation_update, rotation_diagnostics = self._rotation_batch(
+            universe,
+            state,
+            batch_limit=effective_batch_limit,
+        )
 
-        state = self._load_state()
         tracks = state.get("tracks", {})
         state_updates: list[dict[str, Any]] = []
         required_by_key: dict[str, list[str]] = {}
         events: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         scanned_pairs = 0
+        successful_pairs_by_symbol: dict[str, int] = {}
         closed_candles = 0
         suppressed_horizon_events = 0
         strong_ratio = max(
@@ -708,12 +801,24 @@ class ConsolidationBreakoutRadar:
                         "error": type(exc).__name__,
                     })
                     continue
+                if not raw_klines:
+                    errors.append({
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "error": "empty_klines",
+                    })
+                    continue
                 parsed = [Candle.from_binance(row) for row in raw_klines]
                 candles = sorted(
                     (candle for candle in parsed if candle is not None and candle.close_time <= cutoff_ms),
                     key=lambda candle: candle.close_time,
                 )
                 if not candles:
+                    errors.append({
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "error": "no_closed_candles",
+                    })
                     continue
                 deduplicated: list[Candle] = []
                 for candle in candles:
@@ -723,6 +828,9 @@ class ConsolidationBreakoutRadar:
                         deduplicated.append(candle)
                 candles = deduplicated
                 scanned_pairs += 1
+                successful_pairs_by_symbol[symbol] = (
+                    successful_pairs_by_symbol.get(symbol, 0) + 1
+                )
                 closed_candles += len(candles)
 
                 working: dict[str, dict[str, Any]] = {}
@@ -817,10 +925,30 @@ class ConsolidationBreakoutRadar:
         withheld_event_ids = {
             str(event.get("event_id") or "") for event in events[max_signals:]
         }
+        scanned_symbol_count = sum(
+            count == len(timeframes)
+            for count in successful_pairs_by_symbol.values()
+        )
+        partially_scanned_symbol_count = sum(
+            0 < count < len(timeframes)
+            for count in successful_pairs_by_symbol.values()
+        )
         diagnostics: dict[str, Any] = {
-            "status": "ok" if not errors else "degraded",
-            "candidate_count": len(symbols),
+            "status": (
+                "no_candidates"
+                if not symbols
+                else "ok" if not errors else "degraded"
+            ),
+            "candidate_count": len(universe),
+            "batch_count": len(symbols),
+            "attempted_symbol_count": len(symbols),
+            "scanned_symbol_count": scanned_symbol_count,
+            "partially_scanned_symbol_count": partially_scanned_symbol_count,
+            "configured_batch_size": configured_batch_limit,
+            "effective_batch_size": effective_batch_limit,
+            "kline_budget": kline_budget,
             "timeframes": list(timeframes),
+            "expected_pairs": len(symbols) * len(timeframes),
             "scanned_pairs": scanned_pairs,
             "closed_candles": closed_candles,
             "event_count": len(outbound_events),
@@ -829,6 +957,7 @@ class ConsolidationBreakoutRadar:
             "state_update_count": len(state_updates),
             "cutoff_ms": cutoff_ms,
         }
+        diagnostics.update(rotation_diagnostics)
         source_diagnostics = getattr(source, "diagnostics", None)
         if callable(source_diagnostics):
             diagnostics["binance"] = source_diagnostics()
@@ -838,6 +967,7 @@ class ConsolidationBreakoutRadar:
             "template_id": TEMPLATE_ID,
             "events": outbound_events,
             "state_updates": state_updates,
+            "rotation_update": rotation_update,
             "diagnostics": diagnostics,
         }
 
@@ -870,11 +1000,25 @@ class ConsolidationBreakoutRadar:
                 applicable.append(update)
             else:
                 deferred += 1
-        if not applicable:
+        raw_rotation = result.get("rotation_update")
+        rotation_update = raw_rotation if isinstance(raw_rotation, dict) else None
+        if rotation_update is not None:
+            after_symbol = str(rotation_update.get("after_symbol") or "").strip().upper()
+            try:
+                round_number = max(1, int(rotation_update.get("round") or 1))
+            except (TypeError, ValueError, OverflowError):
+                rotation_update = None
+            else:
+                rotation_update = {
+                    "after_symbol": after_symbol,
+                    "round": round_number,
+                }
+        if not applicable and rotation_update is None:
             return {
                 "status": "deferred" if deferred else "no_changes",
                 "applied": 0,
                 "deferred": deferred,
+                "rotation_advanced": False,
             }
 
         def apply(current: Any) -> dict[str, Any]:
@@ -889,6 +1033,8 @@ class ConsolidationBreakoutRadar:
                     payload["tracks"] = {}
             for update in applicable:
                 payload["tracks"][str(update["key"])] = copy.deepcopy(update["state"])
+            if rotation_update is not None:
+                payload["rotation"] = copy.deepcopy(rotation_update)
             payload["updated_at"] = int(time.time())
             return payload
 
@@ -897,6 +1043,7 @@ class ConsolidationBreakoutRadar:
             "status": "ok",
             "applied": len(applicable),
             "deferred": deferred,
+            "rotation_advanced": rotation_update is not None,
         }
 
 
