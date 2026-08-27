@@ -300,7 +300,7 @@ DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
-    "TG_CONSOLIDATION_BREAKOUT": "2026-08-26-consolidation-breakout-v1",
+    "TG_CONSOLIDATION_BREAKOUT": "2026-08-27-consolidation-breakout-v2",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -505,7 +505,9 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             "这里专门推送已确认收线的盘整突破、跌破及其后续真假验证，不与资金流或脉冲提醒混在一起。",
             "",
             "<b>扫描范围</b>",
-            f"- 默认扫描 Binance USDⓈ-M 24小时成交额靠前的 {int(settings.consolidation_breakout_scan_limit)} 个 USDT 永续合约。",
+            "- 覆盖 Binance USDⓈ-M 全部活跃 USDT 永续合约，不按24小时成交额淘汰长尾标的。",
+            f"- 按合约代码稳定轮转，每批最多 {int(settings.consolidation_breakout_scan_limit)} 个；轮转进度会持久化，重启后继续。",
+            "- 以约520个合约、每批40个、每5分钟一批计算，完整覆盖约需70分钟；达到条件的标的在所属批次立即推送。",
             f"- 周期：{timeframes}；每个周期同时识别短期24根、中期72根、长期240根箱体。",
             "- 日线长期箱体可覆盖约240个交易日；周线用于更大级别结构。",
             f"- 调度默认每{seconds_cn(settings.consolidation_breakout_interval_sec)}检查一次，只使用延迟{seconds_cn(settings.consolidation_breakout_close_delay_sec)}后已确认闭合的K线。",

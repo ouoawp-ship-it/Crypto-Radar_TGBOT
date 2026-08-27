@@ -19,7 +19,9 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             settings.consolidation_breakout_timeframes,
             ("4h", "1d", "1w"),
         )
-        self.assertEqual(settings.consolidation_breakout_scan_limit, 24)
+        self.assertEqual(settings.consolidation_breakout_interval_sec, 300)
+        self.assertEqual(settings.consolidation_breakout_scan_limit, 40)
+        self.assertEqual(settings.consolidation_breakout_min_quote_volume, 0)
         self.assertEqual(
             settings.consolidation_breakout_state_path.parent,
             Path(tmp),

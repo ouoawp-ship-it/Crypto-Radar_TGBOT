@@ -88,6 +88,40 @@ class KlineSource:
         return list(self.rows[-limit:])
 
 
+class UniverseSource:
+    def __init__(
+        self,
+        symbols: list[str],
+        rows_by_symbol: dict[str, list[list[Any]]],
+        *,
+        quote_volumes: dict[str, float] | None = None,
+    ) -> None:
+        self.symbols = list(symbols)
+        self.rows_by_symbol = rows_by_symbol
+        self.quote_volumes = quote_volumes or {}
+        self.calls: list[tuple[str, str, int]] = []
+
+    def usdt_perp_symbols(self) -> list[dict[str, str]]:
+        return [{"symbol": symbol} for symbol in self.symbols]
+
+    def ticker_24h(self) -> list[dict[str, str]]:
+        return [
+            {
+                "symbol": symbol,
+                "quoteVolume": str(self.quote_volumes.get(symbol, 0.0)),
+            }
+            for symbol in self.symbols
+        ]
+
+    def klines(self, symbol: str, interval: str, limit: int) -> list[list[Any]]:
+        self.calls.append((symbol, interval, limit))
+        return list(self.rows_by_symbol[symbol][-limit:])
+
+    @property
+    def called_symbols(self) -> list[str]:
+        return [symbol for symbol, _interval, _limit in self.calls]
+
+
 def settings_for(root: Path, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "data_dir": root,
@@ -110,6 +144,332 @@ def closed_now(rows: list[list[Any]], delay_sec: int = 90) -> int:
 
 
 class ConsolidationBreakoutRadarTests(unittest.TestCase):
+    def test_zero_volume_floor_does_not_depend_on_ticker_snapshot(self) -> None:
+        class MissingTickerSource(UniverseSource):
+            def ticker_24h(self) -> list[dict[str, str]]:
+                raise AssertionError("ticker snapshot must not gate full-market mode")
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = range_klines()
+            settings = settings_for(
+                root,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            source = MissingTickerSource(
+                ["NEWUSDT"],
+                {"NEWUSDT": rows},
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(source, now_ms=closed_now(rows))  # type: ignore[arg-type]
+
+            self.assertEqual(source.called_symbols, ["NEWUSDT"])
+            self.assertEqual(result["diagnostics"]["universe_count"], 1)
+
+    def test_full_sweep_finishes_tail_before_wrapping(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symbols = [f"S{index:02d}USDT" for index in range(5)]
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=2,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            store = JsonStore(root)
+            batches: list[list[str]] = []
+            diagnostics: list[dict[str, Any]] = []
+            for _index in range(4):
+                source = UniverseSource(
+                    symbols,
+                    {symbol: [] for symbol in symbols},
+                )
+                radar = ConsolidationBreakoutRadar(settings, store)
+                result = radar.build(source, now_ms=BASE_MS)  # type: ignore[arg-type]
+                commit = radar.commit(result, [])
+                batches.append(source.called_symbols)
+                diagnostics.append(result["diagnostics"])
+                self.assertTrue(commit["rotation_advanced"])
+
+            self.assertEqual(
+                batches,
+                [
+                    ["S00USDT", "S01USDT"],
+                    ["S02USDT", "S03USDT"],
+                    ["S04USDT"],
+                    ["S00USDT", "S01USDT"],
+                ],
+            )
+            self.assertTrue(diagnostics[2]["round_completed"])
+            self.assertEqual(diagnostics[2]["remaining_in_round"], 0)
+            self.assertEqual(diagnostics[3]["rotation_round"], 2)
+
+    def test_batch_is_clamped_to_remaining_kline_budget(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symbols = [f"S{index:02d}USDT" for index in range(5)]
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=100,
+                consolidation_breakout_min_quote_volume=0,
+                consolidation_breakout_timeframes=("4h", "1d", "1w"),
+                excluded_base_assets=(),
+                kline_budget=6,
+            )
+            source = UniverseSource(
+                symbols,
+                {symbol: [] for symbol in symbols},
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(source, now_ms=BASE_MS)  # type: ignore[arg-type]
+
+            self.assertEqual(len(source.calls), 6)
+            self.assertEqual(sorted(set(source.called_symbols)), symbols[:2])
+            self.assertEqual(result["diagnostics"]["candidate_count"], 5)
+            self.assertEqual(result["diagnostics"]["attempted_symbol_count"], 2)
+            self.assertEqual(result["diagnostics"]["scanned_symbol_count"], 0)
+            self.assertEqual(result["diagnostics"]["status"], "degraded")
+            self.assertEqual(result["diagnostics"]["configured_batch_size"], 100)
+            self.assertEqual(result["diagnostics"]["effective_batch_size"], 2)
+
+    def test_full_market_rotation_is_alphabetical_and_survives_restart(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symbols = ["DDDUSDT", "BBBUSDT", "AAAUSDT", "CCCUSDT"]
+            rows_by_symbol = {symbol: range_klines() for symbol in symbols}
+            # Deliberately make alphabetical order the reverse of liquidity order.
+            quote_volumes = {
+                "AAAUSDT": 1.0,
+                "BBBUSDT": 2.0,
+                "CCCUSDT": 3.0,
+                "DDDUSDT": 4.0,
+            }
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=2,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+
+            first_source = UniverseSource(
+                symbols,
+                rows_by_symbol,
+                quote_volumes=quote_volumes,
+            )
+            first_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            first = first_radar.build(
+                first_source,
+                now_ms=closed_now(rows_by_symbol["AAAUSDT"]),
+            )  # type: ignore[arg-type]
+            first_radar.commit(first, [])
+
+            second_source = UniverseSource(
+                list(reversed(symbols)),
+                rows_by_symbol,
+                quote_volumes={
+                    "AAAUSDT": 4.0,
+                    "BBBUSDT": 3.0,
+                    "CCCUSDT": 2.0,
+                    "DDDUSDT": 1.0,
+                },
+            )
+            # A new engine and store model a daemon restart between batches.
+            second_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            second = second_radar.build(
+                second_source,
+                now_ms=closed_now(rows_by_symbol["AAAUSDT"]),
+            )  # type: ignore[arg-type]
+            second_radar.commit(second, [])
+
+            self.assertEqual(first_source.called_symbols, ["AAAUSDT", "BBBUSDT"])
+            self.assertEqual(second_source.called_symbols, ["CCCUSDT", "DDDUSDT"])
+            self.assertEqual(
+                set(first_source.called_symbols + second_source.called_symbols),
+                set(symbols),
+            )
+
+    def test_default_zero_volume_floor_includes_low_volume_contract(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = range_klines()
+            settings = Settings(
+                data_dir=root,
+                consolidation_breakout_enable=True,
+                consolidation_breakout_timeframes=("1d",),
+                excluded_base_assets=(),
+            )
+            source = UniverseSource(
+                ["TINYUSDT"],
+                {"TINYUSDT": rows},
+                quote_volumes={"TINYUSDT": 1.0},
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(source, now_ms=closed_now(rows))  # type: ignore[arg-type]
+
+            self.assertEqual(settings.consolidation_breakout_min_quote_volume, 0)
+            self.assertEqual(source.called_symbols, ["TINYUSDT"])
+            self.assertEqual(result["diagnostics"]["candidate_count"], 1)
+
+    def test_unaccepted_event_advances_rotation_but_replays_on_next_sweep(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event_rows = [*range_klines(), breakout_up(250)]
+            quiet_rows = range_klines()
+            symbols = ["AAAUSDT", "BBBUSDT"]
+            rows_by_symbol = {
+                "AAAUSDT": event_rows,
+                "BBBUSDT": quiet_rows,
+            }
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=1,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            now_ms = closed_now(event_rows)
+
+            first_source = UniverseSource(symbols, rows_by_symbol)
+            first_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            first = first_radar.build(first_source, now_ms=now_ms)  # type: ignore[arg-type]
+            first_event_id = first["events"][0]["event_id"]
+            first_radar.commit(first, [])
+
+            second_source = UniverseSource(symbols, rows_by_symbol)
+            second_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            second = second_radar.build(second_source, now_ms=now_ms)  # type: ignore[arg-type]
+            second_radar.commit(second, [])
+
+            replay_source = UniverseSource(symbols, rows_by_symbol)
+            replay = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(replay_source, now_ms=now_ms)  # type: ignore[arg-type]
+
+            self.assertEqual(first_source.called_symbols, ["AAAUSDT"])
+            self.assertEqual(second_source.called_symbols, ["BBBUSDT"])
+            self.assertEqual(replay_source.called_symbols, ["AAAUSDT"])
+            self.assertEqual(replay["events"][0]["event_id"], first_event_id)
+
+    def test_empty_universe_does_not_reset_persisted_rotation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            symbols = ["AAAUSDT", "BBBUSDT", "CCCUSDT"]
+            rows_by_symbol = {symbol: range_klines() for symbol in symbols}
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=1,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            now_ms = closed_now(rows_by_symbol["AAAUSDT"])
+
+            first_source = UniverseSource(symbols, rows_by_symbol)
+            first_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            first = first_radar.build(first_source, now_ms=now_ms)  # type: ignore[arg-type]
+            first_radar.commit(first, [])
+
+            empty_source = UniverseSource([], {})
+            empty_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            empty = empty_radar.build(empty_source, now_ms=now_ms)  # type: ignore[arg-type]
+            empty_radar.commit(empty, [])
+
+            recovered_source = UniverseSource(symbols, rows_by_symbol)
+            recovered = ConsolidationBreakoutRadar(settings, JsonStore(root)).build(
+                recovered_source,
+                now_ms=now_ms,
+            )  # type: ignore[arg-type]
+
+            self.assertEqual(first_source.called_symbols, ["AAAUSDT"])
+            self.assertEqual(empty_source.called_symbols, [])
+            self.assertEqual(empty["diagnostics"]["candidate_count"], 0)
+            self.assertEqual(recovered_source.called_symbols, ["BBBUSDT"])
+            self.assertEqual(recovered["diagnostics"]["candidate_count"], 3)
+
+    def test_rotation_safely_absorbs_listing_and_delisting_changes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            initial_symbols = ["AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"]
+            changed_symbols = ["AA0USDT", "AAAUSDT", "BBBUSDT", "DDDUSDT"]
+            rows_by_symbol = {
+                symbol: range_klines()
+                for symbol in set(initial_symbols + changed_symbols)
+            }
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=2,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            now_ms = closed_now(rows_by_symbol["AAAUSDT"])
+
+            first_source = UniverseSource(initial_symbols, rows_by_symbol)
+            first_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            first = first_radar.build(first_source, now_ms=now_ms)  # type: ignore[arg-type]
+            first_radar.commit(first, [])
+
+            second_source = UniverseSource(changed_symbols, rows_by_symbol)
+            second_radar = ConsolidationBreakoutRadar(settings, JsonStore(root))
+            second = second_radar.build(second_source, now_ms=now_ms)  # type: ignore[arg-type]
+            second_radar.commit(second, [])
+
+            third_source = UniverseSource(changed_symbols, rows_by_symbol)
+            third = ConsolidationBreakoutRadar(settings, JsonStore(root)).build(
+                third_source,
+                now_ms=now_ms,
+            )  # type: ignore[arg-type]
+
+            self.assertEqual(first_source.called_symbols, ["AAAUSDT", "BBBUSDT"])
+            self.assertEqual(second_source.called_symbols, ["DDDUSDT"])
+            self.assertEqual(third_source.called_symbols, ["AA0USDT", "AAAUSDT"])
+            self.assertNotIn(
+                "CCCUSDT",
+                second_source.called_symbols + third_source.called_symbols,
+            )
+            self.assertIn("AA0USDT", third_source.called_symbols)
+
+    def test_rotation_metadata_preserves_existing_v1_tracks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(
+                root,
+                consolidation_breakout_scan_limit=1,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+            )
+            store = JsonStore(root)
+            legacy_track = {
+                "last_close_time": 123,
+                "box": {"upper": 10.0, "lower": 8.0},
+                "breakout": None,
+                "cooldown_until": 0,
+            }
+            legacy_key = "LEGACYUSDT|1d|long"
+            store.save(settings.consolidation_breakout_state_path, {
+                "schema_version": 1,
+                "tracks": {legacy_key: legacy_track},
+                "updated_at": 100,
+            })
+            rows = range_klines()
+            source = UniverseSource(["AAAUSDT"], {"AAAUSDT": rows})
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            result = radar.build(source, now_ms=closed_now(rows))  # type: ignore[arg-type]
+            radar.commit(result, [])
+            saved = store.load(settings.consolidation_breakout_state_path, {})
+
+            self.assertIn(legacy_key, saved["tracks"])
+            self.assertEqual(saved["tracks"][legacy_key], legacy_track)
+
     def test_detects_breakout_from_240_day_range_and_prefers_long_horizon(self) -> None:
         with TemporaryDirectory() as tmp:
             rows = [*range_klines(), breakout_up(250)]

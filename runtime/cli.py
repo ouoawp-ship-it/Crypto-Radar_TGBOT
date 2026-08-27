@@ -306,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-top", type=int, default=5, help="用于 pulse-review-report：本周涨幅榜数量，默认 5")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
-    parser.add_argument("--consolidation-scan-limit", type=int, default=None, help="临时覆盖盘整突破雷达扫描上限")
+    parser.add_argument("--consolidation-scan-limit", type=int, default=None, help="临时覆盖盘整突破雷达每批扫描数量")
     parser.add_argument("--no-pulse", dest="no_launch", action="store_true", help="本轮不运行脉冲雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不运行公告风险雷达")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")

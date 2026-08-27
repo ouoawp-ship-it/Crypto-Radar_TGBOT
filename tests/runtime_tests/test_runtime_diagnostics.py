@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -171,6 +172,46 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
             result["radars"]["consolidation_breakout"]["state"],
             "disabled",
         )
+
+    def test_consolidation_status_separates_universe_from_current_batch(self) -> None:
+        now = 2_000_000_000
+        stamp = datetime.fromtimestamp(now - 10).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            settings = replace(
+                settings,
+                consolidation_breakout_enable=True,
+            )
+            store.save(settings.runtime_status_path, {
+                "updated_at": stamp,
+                "mode": "live",
+                "task": "loop",
+                "status": "running",
+                "real_send": True,
+                "last_consolidation_breakout_at": stamp,
+                "next_consolidation_breakout_at": "later",
+                "consolidation_breakout_cycle_status": "ok",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "candidate_count": 524,
+                        "scanned_symbol_count": 40,
+                        "scanned_pairs": 120,
+                    },
+                },
+            })
+
+            result = build_market_radar_runtime_status(
+                settings,
+                store,
+                now=now,
+            )
+
+        radar = result["radars"]["consolidation_breakout"]
+        self.assertEqual(radar["state"], "running")
+        self.assertEqual(radar["candidate_count"], 524)
+        self.assertEqual(radar["scanned_count"], 40)
 
     def test_stale_heartbeat_does_not_claim_running(self) -> None:
         now = 2_000_000_000

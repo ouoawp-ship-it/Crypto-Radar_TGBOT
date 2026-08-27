@@ -231,6 +231,21 @@ LEGACY_ALIASES = {
 }
 
 MANAGED_MIGRATIONS = {
+    "CONSOLIDATION_BREAKOUT_INTERVAL_SEC": {
+        "old": {"", "900"},
+        "new": "300",
+        "note": "盘整突破雷达改为每 5 分钟轮转一个安全批次",
+    },
+    "CONSOLIDATION_BREAKOUT_SCAN_LIMIT": {
+        "old": {"", "24"},
+        "new": "40",
+        "note": "每批 40 个合约，在默认 120 次 K 线预算内覆盖三个周期",
+    },
+    "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME": {
+        "old": {"", "5000000", "5000000.0"},
+        "new": "0",
+        "note": "0 表示不按 24 小时成交额排除活跃 USDT 永续合约",
+    },
     "SIMPLE_ALERT_MIN_QUOTE_VOLUME": {
         "old": {"", "5000000", "5000000.0"},
         "new": "1000000",
