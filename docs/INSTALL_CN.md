@@ -106,8 +106,9 @@ paopao telegram-test
   --send --confirm-real-send
 ```
 
-随后在 `config/.env.oi` 设置 `CONSOLIDATION_BREAKOUT_ENABLE=true`。完整扫描周期、
-240 日箱体和假突破规则见
+随后在 `config/.env.oi` 设置 `CONSOLIDATION_BREAKOUT_ENABLE=true`；需要启用
+三推顶/底背离时再显式设置 `CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE=true`。
+完整扫描周期、240 日箱体、假突破和三推确认规则见
 [盘整突破雷达说明](CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
 ## 更新
@@ -121,8 +122,8 @@ bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 通过 Tag CI 的 annotated Tag，并使用独立入口：
 
 ```bash
-bash scripts/deploy_tag.sh --check-tag v2.3.0
-bash scripts/deploy_tag.sh --tag v2.3.0 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.4.0
+bash scripts/deploy_tag.sh --tag v2.4.0 --yes --refresh-pulse-topic-intro
 ```
 
 `--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会

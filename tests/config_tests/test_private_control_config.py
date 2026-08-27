@@ -120,6 +120,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["FLOW_RADAR_ENABLE"])
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
         self.assertFalse(status["CONSOLIDATION_BREAKOUT_ENABLE"])
+        self.assertFalse(status["CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE"])
 
     def test_admin_status_marks_invalid_value_without_exposing_it(self) -> None:
         invalid = "not-a-private-admin"
@@ -234,6 +235,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "FLOW_RADAR_ENABLE",
             "ANNOUNCEMENT_RISK_ENABLE",
             "CONSOLIDATION_BREAKOUT_ENABLE",
+            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
         )
         for key in keys:
             with self.subTest(key=key):

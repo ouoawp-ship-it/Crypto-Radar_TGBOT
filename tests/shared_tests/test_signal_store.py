@@ -181,6 +181,49 @@ class SignalEventStoreTests(unittest.TestCase):
             "strong_breakout_up",
         )
 
+    def test_three_push_facts_keep_the_three_structural_points(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            append_from_push(
+                settings,
+                template_id="TG_CONSOLIDATION_BREAKOUT",
+                dedup_key="three-push:BTCUSDT:4h:1000",
+                status="sent",
+                sent=True,
+                text="BTCUSDT 4H 三推顶背离形成中 78分",
+                ts=1000,
+                structured_records=[{
+                    "symbol": "BTCUSDT",
+                    "event": "three_push_top_forming",
+                    "timeframe": "4h",
+                    "horizon": "three_push",
+                    "structure": "top",
+                    "direction": "down",
+                    "box_horizon": "long",
+                    "pattern_id": "top:1:2:3",
+                    "push_prices": [100.0, 101.0, 102.0],
+                    "push_macd": [3.0, 2.0, 1.0],
+                    "push_volumes": [300.0, 200.0, 100.0],
+                    "neckline": 95.0,
+                    "invalidation": 103.0,
+                    "macd_weakening_pct": 66.67,
+                    "score": 78,
+                    "event_time": 1000,
+                }],
+            )
+            item = SignalEventStore(
+                settings.signal_events_db_path
+            ).list_signals()["items"][0]
+
+        facts = item["payload"]["facts"]
+        self.assertEqual(facts["event"], "three_push_top_forming")
+        self.assertEqual(facts["structure"], "top")
+        self.assertEqual(facts["direction"], "down")
+        self.assertEqual(facts["box_horizon"], "long")
+        self.assertEqual(facts["push_prices"], [100.0, 101.0, 102.0])
+        self.assertEqual(facts["push_macd"], [3.0, 2.0, 1.0])
+        self.assertEqual(facts["neckline"], 95.0)
+
     def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = self.settings_for(tmp)

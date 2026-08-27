@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
 import sqlite3
 import sys
@@ -150,6 +151,18 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "event_id", "event", "timeframe", "horizon", "box_upper",
     "box_lower", "box_age", "width_pct", "volume_ratio", "event_time",
     "breakout_distance_pct", "bars_since_breakout",
+    "pattern_id", "structure", "direction", "neckline", "invalidation", "atr",
+    "formed_close_time", "third_pivot_close_time", "push_prices",
+    "push_macd", "push_volumes", "push_close_times",
+    "macd_weakening_pct", "price_progress_pct",
+    "volume_progressive_weakening", "third_vs_first_volume_ratio",
+    "box_horizon", "box_edge", "box_edge_signed_atr",
+})
+THREE_PUSH_LIST_FIELDS = frozenset({
+    "push_prices",
+    "push_macd",
+    "push_volumes",
+    "push_close_times",
 })
 
 
@@ -269,6 +282,16 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
                 for item in value[:10]
                 if isinstance(item, str) and item
             ]
+        elif key in THREE_PUSH_LIST_FIELDS and isinstance(value, list):
+            safe_values: list[float | int] = []
+            for item in value[:3]:
+                if isinstance(item, bool) or not isinstance(item, (int, float)):
+                    continue
+                number = float(item)
+                if not math.isfinite(number):
+                    continue
+                safe_values.append(item)
+            payload[key] = safe_values
     return payload
 
 

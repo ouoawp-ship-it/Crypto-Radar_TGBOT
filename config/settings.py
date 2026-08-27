@@ -347,6 +347,7 @@ class Settings:
     consolidation_breakout_timeframes: tuple[str, ...] = ("4h", "1d", "1w")
     consolidation_breakout_strong_volume_ratio: float = 1.20
     consolidation_breakout_require_strong_volume: bool = False
+    consolidation_breakout_three_push_enable: bool = False
     consolidation_breakout_max_signals_per_scan: int = 8
     consolidation_breakout_state_path: Path = (
         BASE_DIR / "data" / "consolidation_breakout_state.json"
@@ -1095,6 +1096,10 @@ class Settings:
                 "CONSOLIDATION_BREAKOUT_REQUIRE_STRONG_VOLUME",
                 False,
             ),
+            consolidation_breakout_three_push_enable=reloadable_bool(
+                "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
+                False,
+            ),
             consolidation_breakout_max_signals_per_scan=env_bounded_int(
                 "CONSOLIDATION_BREAKOUT_MAX_SIGNALS_PER_SCAN",
                 8,
@@ -1540,6 +1545,9 @@ class Settings:
                 ),
                 "require_strong_volume": (
                     self.consolidation_breakout_require_strong_volume
+                ),
+                "three_push_enabled": (
+                    self.consolidation_breakout_three_push_enable
                 ),
                 "max_signals_per_scan": (
                     self.consolidation_breakout_max_signals_per_scan

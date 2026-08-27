@@ -300,7 +300,7 @@ DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
-    "TG_CONSOLIDATION_BREAKOUT": "2026-08-27-consolidation-breakout-v2",
+    "TG_CONSOLIDATION_BREAKOUT": "2026-08-28-consolidation-breakout-v3",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -502,7 +502,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         return "\n".join([
             "📌 <b>盘整突破雷达话题说明</b>",
             "",
-            "这里专门推送已确认收线的盘整突破、跌破及其后续真假验证，不与资金流或脉冲提醒混在一起。",
+            "这里专门推送已确认收线的盘整突破、跌破、真假验证和三推背离结构，不与资金流或脉冲提醒混在一起。",
             "",
             "<b>扫描范围</b>",
             "- 覆盖 Binance USDⓈ-M 全部活跃 USDT 永续合约，不按24小时成交额淘汰长尾标的。",
@@ -518,11 +518,16 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             "3. 假突破 / 假跌破：突破后3根内重新深度收回箱体。",
             "4. 回踩 / 回抽确认：突破后12根内测试旧边界并再次收在突破方向。",
             "5. 上沿 / 下沿扫盘：影线越界但收盘仍在箱体内。",
+            "6. 三推顶 / 三推底形成中：三个已确认价格枢轴逐次创新高/新低，同时标准MACD峰谷逐次减弱。",
+            "7. 三推背离确认：形成后12根内，收盘越过第二、三推之间冻结的颈线和ATR缓冲。",
             "",
-            "<b>箱体质量</b>",
+            "<b>箱体与三推质量</b>",
             "- 上下沿各需至少2个分离的触碰簇，并限制箱宽、路径效率和边界漂移。",
             "- 边界确认后冻结，避免新高/新低移动边界制造伪穿越。",
             "- 同一币种同一周期同一根K线若多个期限同时触发，只推优先级最高的一条。",
+            "- 三推使用左右各2根闭合K线确认枢轴，不读取未来数据；成交量衰减只加分，不作为硬门槛。",
+            "- 三推按币种和周期独立检测，不会因短/中/长期三个箱体重复；靠近箱体边缘时增加共振分。",
+            f"- 三推背离独立开关当前{'已启用' if getattr(settings, 'consolidation_breakout_three_push_enable', False) else '未启用'}。",
             "",
             "数据来自 Binance USDⓈ-M Futures 已闭合K线；仅作结构预警，不构成投资建议。",
         ])
