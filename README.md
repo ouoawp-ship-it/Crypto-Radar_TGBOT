@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。当前版本延续 BOT-only 运行时和全市场盘整突破雷达，新增非重绘的三推顶/底价格-MACD 背离形成与确认信号，并保留脉冲雷达的严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。当前版本延续 BOT-only 运行时和全市场盘整突破雷达，并将非重绘的三推顶/底背离升级到 rule v2：价格与 MACD 使用同周期独立枢轴，信号确认前的新极值会淘汰旧第三推，推送改用可解释的结构质量标签；脉冲雷达的严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流保持不变。
 
 ## 核心功能
 
@@ -8,7 +8,7 @@
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
-- 盘整突破雷达：默认关闭；扫描 4H、日线、周线的 24/72/240 根冻结箱体，推送确认突破、假突破/假跌破、回踩、扫盘，以及独立开关控制的三推顶/底背离形成与确认。
+- 盘整突破雷达：默认关闭；扫描 4H、日线、周线的 24/72/240 根冻结箱体，推送确认突破、假突破/假跌破、回踩、扫盘，以及独立开关控制的三推顶/底背离形成与确认。三推只推送“强”或“一般”质量结构，“弱”结构仅更新内部状态和扫描诊断。
 - 公告风险：独立解析并推送 Binance 官方上新、下架和活动公告，不参与脉冲雷达分类。
 - 山寨合约异动雷达：P1 生成候选池，P2 在现有唯一 WebSocket 内做多因子确认，Final 提供可恢复的生产运行；生产调度和真实发送均默认关闭。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
@@ -111,6 +111,12 @@ python main.py live --send --confirm-real-send
 创建专属话题、数百日箱体口径、全市场轮转、假突破/三推状态机和回滚方式见
 [盘整突破雷达说明](docs/CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
+三推 rule v2 要求三次价格推进分别匹配三个独立、已确认的同周期 MACD 枢轴；
+两段价格推进各不少于 `0.10 ATR`，两段 MACD 各至少弱化 `5%`，第三推被后续
+新高/新低取代时旧结构立即作废。三推 Telegram 卡片不再显示未经历史校准的
+`/100` 分数，而是列出结构质量及价格推进、MACD 三枢轴、量能、箱体位置和颈线
+状态。箱体突破等原有事件的评分口径不变。
+
 `telegram-topic-refresh` 只刷新已经存在的话题，不会创建新话题；说明版本和
 正文都未变化时不会重复发送。服务器更新脚本只有显式增加
 `--refresh-pulse-topic-intro` 才会执行这项真实 Telegram 操作，内部仍同时使用
@@ -161,8 +167,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.4.0
-bash scripts/deploy_tag.sh --tag v2.4.0 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.4.1
+bash scripts/deploy_tag.sh --tag v2.4.1 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

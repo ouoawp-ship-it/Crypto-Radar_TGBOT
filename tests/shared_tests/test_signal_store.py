@@ -176,6 +176,7 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(item["payload"]["facts"]["timeframe"], "1d")
         self.assertEqual(item["payload"]["facts"]["horizon"], "long")
         self.assertEqual(item["payload"]["facts"]["box_upper"], 101.5)
+        self.assertEqual(item["score"], 82)
         self.assertEqual(
             item["payload"]["facts"]["event"],
             "strong_breakout_up",
@@ -194,6 +195,7 @@ class SignalEventStoreTests(unittest.TestCase):
                 ts=1000,
                 structured_records=[{
                     "symbol": "BTCUSDT",
+                    "rule_version": 2,
                     "event": "three_push_top_forming",
                     "timeframe": "4h",
                     "horizon": "three_push",
@@ -204,9 +206,20 @@ class SignalEventStoreTests(unittest.TestCase):
                     "push_prices": [100.0, 101.0, 102.0],
                     "push_macd": [3.0, 2.0, 1.0],
                     "push_volumes": [300.0, 200.0, 100.0],
+                    "push_macd_close_times": [101, 202, 303],
+                    "price_step_atr_ratios": [0.15, 0.12],
+                    "macd_step_weakening_pcts": [33.33, 50.0],
                     "neckline": 95.0,
                     "invalidation": 103.0,
                     "macd_weakening_pct": 66.67,
+                    "structure_quality": "strong",
+                    "structure_quality_label": "强",
+                    "quality_rank": 2,
+                    "price_progression_pass": True,
+                    "macd_three_pivots_pass": True,
+                    "volume_confirmation_pass": True,
+                    "box_edge_confluence_pass": True,
+                    "neckline_status": "forming",
                     "score": 78,
                     "event_time": 1000,
                 }],
@@ -216,12 +229,26 @@ class SignalEventStoreTests(unittest.TestCase):
             ).list_signals()["items"][0]
 
         facts = item["payload"]["facts"]
+        self.assertIsNone(item["score"])
+        self.assertNotIn("score", facts)
+        self.assertEqual(facts["rule_version"], 2)
         self.assertEqual(facts["event"], "three_push_top_forming")
         self.assertEqual(facts["structure"], "top")
         self.assertEqual(facts["direction"], "down")
         self.assertEqual(facts["box_horizon"], "long")
         self.assertEqual(facts["push_prices"], [100.0, 101.0, 102.0])
         self.assertEqual(facts["push_macd"], [3.0, 2.0, 1.0])
+        self.assertEqual(facts["push_macd_close_times"], [101, 202, 303])
+        self.assertEqual(facts["price_step_atr_ratios"], [0.15, 0.12])
+        self.assertEqual(facts["macd_step_weakening_pcts"], [33.33, 50.0])
+        self.assertEqual(facts["structure_quality"], "strong")
+        self.assertEqual(facts["structure_quality_label"], "强")
+        self.assertEqual(facts["quality_rank"], 2)
+        self.assertTrue(facts["price_progression_pass"])
+        self.assertTrue(facts["macd_three_pivots_pass"])
+        self.assertTrue(facts["volume_confirmation_pass"])
+        self.assertTrue(facts["box_edge_confluence_pass"])
+        self.assertEqual(facts["neckline_status"], "forming")
         self.assertEqual(facts["neckline"], 95.0)
 
     def test_repair_legacy_signals_is_auditable_and_backed_up(self) -> None:
