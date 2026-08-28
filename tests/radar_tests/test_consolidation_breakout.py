@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 from config import Settings
 from radars.consolidation_breakout.radar import (
@@ -11,7 +13,7 @@ from radars.consolidation_breakout.radar import (
     ConsolidationBreakoutRadar,
     _detect_three_push_pattern,
     _step_three_push_track,
-    _three_push_score,
+    _three_push_quality,
     count_touch_clusters,
 )
 from shared.storage import JsonStore
@@ -79,7 +81,7 @@ def three_push_candles(
     closes += [106, 108, 110, 112, 114, 116, 118, 121]
     closes += [117, 113, 110, 107] + [107] * hold
     closes += [108, 109, 110, 112, 114, 116, 118, 120, 122]
-    closes += [118, 114]
+    closes += [118, 114, 114]
     if bottom:
         closes = [200.0 - value for value in closes]
     candles: list[Candle] = []
@@ -119,6 +121,42 @@ def rows_from_candles(candles: list[Candle]) -> list[list[Any]]:
         ]
         for candle in candles
     ]
+
+
+def top_pivot_indices(candles: list[Candle]) -> list[int]:
+    return [
+        index
+        for index in range(2, len(candles) - 2)
+        if all(
+            candles[index].high > candles[neighbor].high
+            for neighbor in range(index - 2, index + 3)
+            if neighbor != index
+        )
+    ][-3:]
+
+
+def bottom_pivot_indices(candles: list[Candle]) -> list[int]:
+    return [
+        index
+        for index in range(2, len(candles) - 2)
+        if all(
+            candles[index].low < candles[neighbor].low
+            for neighbor in range(index - 2, index + 3)
+            if neighbor != index
+        )
+    ][-3:]
+
+
+def macd_with_pivots(
+    candle_count: int,
+    peak_indices: list[int],
+    peak_values: list[float],
+) -> list[float]:
+    baseline = -1.0 if peak_values and peak_values[0] < 0 else 1.0
+    values = [baseline] * candle_count
+    for index, value in zip(peak_indices, peak_values, strict=True):
+        values[index] = value
+    return values
 
 
 class KlineSource:
@@ -722,12 +760,146 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
 
     def test_three_push_rejects_price_only_pattern_without_progressive_macd(self) -> None:
         candles = three_push_candles(hold=4)
+        pivots = top_pivot_indices(candles)
+        non_progressive_macd = macd_with_pivots(
+            len(candles),
+            pivots,
+            [100.0, 100.0, 90.0],
+        )
 
-        pattern = _detect_three_push_pattern(candles, len(candles) - 1)
+        with patch(
+            "radars.consolidation_breakout.radar._macd_line",
+            return_value=non_progressive_macd,
+        ):
+            pattern = _detect_three_push_pattern(candles, len(candles) - 1)
 
         self.assertIsNone(pattern)
 
-    def test_three_push_volume_weakening_adds_score_but_is_not_required(self) -> None:
+    def test_three_push_rejects_descending_macd_samples_without_three_macd_peaks(self) -> None:
+        candles = three_push_candles()
+        sampled_macd = [20.0 - index * 0.05 for index in range(len(candles))]
+
+        with patch(
+            "radars.consolidation_breakout.radar._macd_line",
+            return_value=sampled_macd,
+        ):
+            pattern = _detect_three_push_pattern(candles, len(candles) - 1)
+
+        self.assertIsNone(pattern)
+
+    def test_three_push_price_steps_require_at_least_one_tenth_atr_each(self) -> None:
+        candles = three_push_candles()
+        pivots = top_pivot_indices(candles)
+        macd = macd_with_pivots(len(candles), pivots, [100.0, 90.0, 80.0])
+
+        exact = list(candles)
+        below = list(candles)
+        for index, exact_high, below_high in zip(
+            pivots,
+            [130.0, 131.0, 132.0],
+            [130.0, 130.99, 131.98],
+            strict=True,
+        ):
+            exact[index] = replace(exact[index], high=exact_high)
+            below[index] = replace(below[index], high=below_high)
+
+        with (
+            patch(
+                "radars.consolidation_breakout.radar._macd_line",
+                return_value=macd,
+            ),
+            patch(
+                "radars.consolidation_breakout.radar._atr",
+                return_value=10.0,
+            ),
+        ):
+            exact_pattern = _detect_three_push_pattern(exact, len(exact) - 1)
+            below_pattern = _detect_three_push_pattern(below, len(below) - 1)
+
+        self.assertIsNotNone(exact_pattern)
+        self.assertIsNone(below_pattern)
+
+        bottom_candles = three_push_candles(bottom=True)
+        bottom_pivots = bottom_pivot_indices(bottom_candles)
+        bottom_macd = macd_with_pivots(
+            len(bottom_candles),
+            bottom_pivots,
+            [-100.0, -90.0, -80.0],
+        )
+        exact_bottom = list(bottom_candles)
+        below_bottom = list(bottom_candles)
+        for index, exact_low, below_low in zip(
+            bottom_pivots,
+            [70.0, 69.0, 68.0],
+            [70.0, 69.01, 68.02],
+            strict=True,
+        ):
+            exact_bottom[index] = replace(exact_bottom[index], low=exact_low)
+            below_bottom[index] = replace(below_bottom[index], low=below_low)
+
+        with (
+            patch(
+                "radars.consolidation_breakout.radar._macd_line",
+                return_value=bottom_macd,
+            ),
+            patch(
+                "radars.consolidation_breakout.radar._atr",
+                return_value=10.0,
+            ),
+        ):
+            exact_bottom_pattern = _detect_three_push_pattern(
+                exact_bottom,
+                len(exact_bottom) - 1,
+            )
+            below_bottom_pattern = _detect_three_push_pattern(
+                below_bottom,
+                len(below_bottom) - 1,
+            )
+
+        self.assertIsNotNone(exact_bottom_pattern)
+        self.assertIsNone(below_bottom_pattern)
+
+    def test_three_push_macd_steps_require_five_percent_of_first_peak_each(self) -> None:
+        cases = (
+            ("exact boundary", [100.0, 95.0, 90.0], True),
+            ("first step below", [100.0, 95.01, 89.0], False),
+            ("second step below", [100.0, 94.0, 89.01], False),
+        )
+
+        for bottom in (False, True):
+            candles = three_push_candles(bottom=bottom)
+            pivots = (
+                bottom_pivot_indices(candles)
+                if bottom
+                else top_pivot_indices(candles)
+            )
+            for label, unsigned_values, expected in cases:
+                peak_values = (
+                    [-value for value in unsigned_values]
+                    if bottom
+                    else unsigned_values
+                )
+                with self.subTest(
+                    structure="bottom" if bottom else "top",
+                    label=label,
+                ):
+                    macd = macd_with_pivots(
+                        len(candles),
+                        pivots,
+                        peak_values,
+                    )
+                    with patch(
+                        "radars.consolidation_breakout.radar._macd_line",
+                        return_value=macd,
+                    ):
+                        pattern = _detect_three_push_pattern(
+                            candles,
+                            len(candles) - 1,
+                        )
+
+                    self.assertEqual(pattern is not None, expected)
+
+    def test_three_push_volume_weakening_affects_quality_but_is_not_pattern_gate(self) -> None:
         weakening = _detect_three_push_pattern(
             three_push_candles(),
             len(three_push_candles()) - 1,
@@ -742,7 +914,14 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
         assert weakening is not None and rising is not None
         weakening["event"] = "three_push_top_forming"
         rising["event"] = "three_push_top_forming"
-        self.assertGreater(_three_push_score(weakening), _three_push_score(rising))
+        self.assertEqual(
+            _three_push_quality(weakening)["structure_quality"],
+            "normal",
+        )
+        self.assertEqual(
+            _three_push_quality(rising)["structure_quality"],
+            "weak",
+        )
 
     def test_three_push_forms_then_confirms_once_after_neckline_close(self) -> None:
         candles = three_push_candles()
@@ -852,6 +1031,109 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
         assert confirmed is not None
         self.assertEqual(confirmed["event"], "three_push_bottom_confirmed")
 
+    def test_pending_three_push_top_is_discarded_on_any_higher_high(self) -> None:
+        candles = three_push_candles()
+        track, forming = _step_three_push_track(
+            {},
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNotNone(forming)
+        assert forming is not None
+
+        index = len(candles)
+        open_time = BASE_MS + index * DAY_MS
+        neckline = float(forming["neckline"])
+        atr = float(forming["atr"])
+        candles.append(Candle(
+            open_time=open_time,
+            open=candles[-1].close,
+            high=float(forming["push_prices"][-1]) + 0.01,
+            low=neckline - atr - 0.4,
+            close=neckline - atr,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+
+        discarded, event = _step_three_push_track(
+            track,
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNone(event)
+        self.assertIsNone(discarded["setup"])
+
+    def test_pending_three_push_bottom_is_discarded_on_any_lower_low(self) -> None:
+        candles = three_push_candles(bottom=True, increasing_volume=True)
+        track, forming = _step_three_push_track(
+            {},
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNotNone(forming)
+        assert forming is not None
+
+        index = len(candles)
+        open_time = BASE_MS + index * DAY_MS
+        neckline = float(forming["neckline"])
+        atr = float(forming["atr"])
+        candles.append(Candle(
+            open_time=open_time,
+            open=candles[-1].close,
+            high=neckline + atr + 0.4,
+            low=float(forming["push_prices"][-1]) - 0.01,
+            close=neckline + atr,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+
+        discarded, event = _step_three_push_track(
+            track,
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNone(event)
+        self.assertIsNone(discarded["setup"])
+
+    def test_legacy_three_push_setup_without_rule_version_never_confirms(self) -> None:
+        candles = three_push_candles()
+        track, forming = _step_three_push_track(
+            {},
+            candles,
+            len(candles) - 1,
+        )
+        self.assertIsNotNone(forming)
+        assert forming is not None
+        legacy = dict(track)
+        legacy["setup"] = dict(track["setup"])
+        legacy["setup"].pop("rule_version", None)
+
+        index = len(candles)
+        open_time = BASE_MS + index * DAY_MS
+        neckline = float(forming["neckline"])
+        atr = float(forming["atr"])
+        candles.append(Candle(
+            open_time=open_time,
+            open=candles[-1].close,
+            high=candles[-1].high,
+            low=neckline - atr - 0.4,
+            close=neckline - atr,
+            volume=100.0,
+            close_time=open_time + DAY_MS - 1,
+        ))
+
+        migrated, event = _step_three_push_track(
+            legacy,
+            candles,
+            len(candles) - 1,
+        )
+
+        self.assertIsNone(event)
+        self.assertIsNone(migrated["setup"])
+        self.assertEqual(migrated["rule_version"], 2)
+
     def test_three_push_build_waits_for_closed_confirmation_bar(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -890,6 +1172,133 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 "three_push_top_forming",
             )
             self.assertIn("右侧2根闭合K线", three_push_events[0]["text"])
+
+    def test_three_push_text_uses_explainable_quality_without_score(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(KlineSource(rows), now_ms=closed_now(rows))  # type: ignore[arg-type]
+            event = next(
+                event
+                for event in result["events"]
+                if event["event"] == "three_push_top_forming"
+            )
+            text = event["text"]
+
+            self.assertNotIn("评分", text)
+            self.assertNotIn("/100", text)
+            expected_reasons = {
+                "结构质量": "一般",
+                "价格推进": "通过",
+                "MACD三峰": "通过",
+                "量能确认": "通过",
+                "箱体位置": "未通过",
+                "颈线状态": "形成中",
+            }
+            for label, reason in expected_reasons.items():
+                with self.subTest(label=label):
+                    line = next(
+                        line for line in text.splitlines() if label in line
+                    )
+                    self.assertIn(reason, line)
+                    if label == "箱体位置":
+                        self.assertIn("共振", line)
+
+    def test_weak_three_push_is_suppressed_and_checkpointed_once(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles(increasing_volume=True)
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            first = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in first["events"]
+            ))
+            self.assertEqual(
+                first["diagnostics"]["three_push_weak_suppressed_count"],
+                1,
+            )
+
+            radar.commit(first, [])
+            key = "TESTUSDT|1d|three_push"
+            saved = store.load(settings.consolidation_breakout_state_path, {})
+            track = saved["tracks"][key]
+            self.assertEqual(track["last_close_time"], candles[-1].close_time)
+            self.assertEqual(track["setup"]["structure_quality"], "weak")
+            self.assertTrue(track["last_pattern_id"])
+
+            repeated = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in repeated["events"]
+            ))
+            self.assertEqual(
+                repeated["diagnostics"]["three_push_weak_suppressed_count"],
+                0,
+            )
+
+            setup = track["setup"]
+            neckline = float(setup["neckline"])
+            atr = float(setup["atr"])
+            index = len(candles)
+            open_time = BASE_MS + index * DAY_MS
+            close = neckline - atr
+            candles.append(Candle(
+                open_time=open_time,
+                open=candles[-1].close,
+                high=candles[-1].high,
+                low=close - 0.4,
+                close=close,
+                volume=100.0,
+                close_time=open_time + DAY_MS - 1,
+            ))
+            rows = rows_from_candles(candles)
+            confirmed = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in confirmed["events"]
+            ))
+            self.assertEqual(
+                confirmed["diagnostics"]["three_push_weak_suppressed_count"],
+                1,
+            )
+
+            radar.commit(confirmed, [])
+            finished = store.load(settings.consolidation_breakout_state_path, {})
+            self.assertIsNone(finished["tracks"][key]["setup"])
+            final_repeat = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertEqual(
+                final_repeat["diagnostics"]["three_push_weak_suppressed_count"],
+                0,
+            )
 
     def test_three_push_delivery_replays_forming_and_confirmed_events(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1047,6 +1456,61 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
 
             self.assertEqual(replayed_event["event_id"], first_event["event_id"])
 
+    def test_catch_up_drops_forming_event_superseded_later_in_same_batch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candles = three_push_candles()
+            prior_close_time = candles[-2].close_time
+            index = len(candles)
+            open_time = BASE_MS + index * DAY_MS
+            candles.append(Candle(
+                open_time=open_time,
+                open=114.0,
+                high=123.0,
+                low=113.6,
+                close=114.0,
+                volume=100.0,
+                close_time=open_time + DAY_MS - 1,
+            ))
+            rows = rows_from_candles(candles)
+            settings = settings_for(
+                root,
+                consolidation_breakout_three_push_enable=True,
+            )
+            store = JsonStore(root)
+            key = "TESTUSDT|1d|three_push"
+            store.save(settings.consolidation_breakout_state_path, {
+                "schema_version": 1,
+                "tracks": {
+                    key: {
+                        "rule_version": 2,
+                        "last_close_time": prior_close_time,
+                        "setup": None,
+                        "last_pattern_id": "",
+                        "last_third_pivot_close_time": 0,
+                        "pending_context": None,
+                    },
+                },
+                "rotation": {"after_symbol": "", "round": 1},
+            })
+            radar = ConsolidationBreakoutRadar(settings, store)
+
+            result = radar.build(
+                KlineSource(rows),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+
+            self.assertFalse(any(
+                event["event"].startswith("three_push_")
+                for event in result["events"]
+            ))
+            committed = radar.commit(result, [])
+            self.assertEqual(committed["deferred"], 0)
+            saved = store.load(settings.consolidation_breakout_state_path, {})
+            track = saved["tracks"][key]
+            self.assertEqual(track["last_close_time"], candles[-1].close_time)
+            self.assertIsNone(track["setup"])
+
     def test_corrupted_three_push_setup_is_discarded_without_stopping_scan(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1056,7 +1520,7 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
             candles.append(Candle(
                 open_time=open_time,
                 open=114.0,
-                high=114.4,
+                high=123.0,
                 low=113.6,
                 close=114.0,
                 volume=100.0,
@@ -1103,7 +1567,7 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
             self.assertEqual(committed["status"], "ok")
             self.assertIsNone(saved["tracks"][key]["setup"])
 
-    def test_three_push_replay_freezes_box_context_score_and_text(self) -> None:
+    def test_three_push_replay_freezes_box_context_quality_and_text(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             candles = three_push_candles()
@@ -1149,11 +1613,22 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 for event in result["events"]
                 if event["event"] == "three_push_top_forming"
             )
+            self.assertNotIn("score", first)
             expected = (
                 first["event_id"],
-                first["score"],
+                first["structure_quality"],
+                first["structure_quality_label"],
                 first["text"],
                 first["box_horizon"],
+            )
+            third_push_index = next(
+                index
+                for index, candle in enumerate(candles)
+                if candle.close_time == first["push_close_times"][2]
+            )
+            candles[third_push_index] = replace(
+                candles[third_push_index],
+                volume=first["push_volumes"][0] * 2.0,
             )
 
             for _attempt in range(2):
@@ -1182,7 +1657,8 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 self.assertEqual(
                     (
                         replay["event_id"],
-                        replay["score"],
+                        replay["structure_quality"],
+                        replay["structure_quality_label"],
                         replay["text"],
                         replay["box_horizon"],
                     ),

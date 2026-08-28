@@ -1433,17 +1433,21 @@ class TelegramGatewayTests(unittest.TestCase):
 
             for phrase in (
                 "三推顶 / 三推底形成中",
-                "标准MACD峰谷逐次减弱",
+                "三个独立的同周期MACD局部峰谷",
                 "形成后12根内",
-                "左右各2根闭合K线确认枢轴",
-                "成交量衰减只加分，不作为硬门槛",
+                "价格与MACD枢轴都由左右各2根闭合K线确认",
+                "两段价格推进各需至少0.10 ATR",
+                "两段MACD各需至少弱化5%",
+                "两项都不满足为“弱”并仅更新内部状态，不推送",
+                "不再显示未经回测校准的/100评分",
+                "原箱体事件评分不变",
                 "不会因短/中/长期三个箱体重复",
                 "三推背离独立开关当前已启用",
             ):
                 self.assertIn(phrase, intro)
             self.assertEqual(
                 topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-08-28-consolidation-breakout-v3",
+                "2026-08-29-consolidation-breakout-v4",
             )
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

@@ -7,6 +7,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
+from itertools import product
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,13 +29,17 @@ FAKEOUT_BARS = 3
 RETEST_BARS = 12
 THREE_PUSH_PIVOT_LEFT = 2
 THREE_PUSH_PIVOT_RIGHT = 2
+THREE_PUSH_MACD_PIVOT_LEFT = 2
+THREE_PUSH_MACD_PIVOT_RIGHT = 2
+THREE_PUSH_MACD_ALIGNMENT_BARS = 2
 THREE_PUSH_LOOKBACK_BARS = 96
 THREE_PUSH_PULLBACK_ATR = 0.50
-THREE_PUSH_PRICE_STEP_ATR = 0.05
+THREE_PUSH_PRICE_STEP_ATR = 0.10
 THREE_PUSH_CONFIRM_BUFFER_ATR = 0.05
 THREE_PUSH_INVALIDATION_BUFFER_ATR = 0.10
 THREE_PUSH_MAX_CONFIRM_BARS = 12
-THREE_PUSH_MIN_MACD_WEAKENING = 0.10
+THREE_PUSH_MIN_MACD_LEG_WEAKENING = 0.05
+THREE_PUSH_RULE_VERSION = 2
 THREE_PUSH_EDGE_TOLERANCE_ATR = 0.50
 
 
@@ -343,6 +348,98 @@ def _is_price_pivot(
     )
 
 
+def _is_macd_pivot(
+    values: list[float],
+    index: int,
+    *,
+    structure: str,
+) -> bool:
+    left = THREE_PUSH_MACD_PIVOT_LEFT
+    right = THREE_PUSH_MACD_PIVOT_RIGHT
+    if index - left < 0 or index + right >= len(values):
+        return False
+    value = values[index]
+    neighbors = (
+        values[neighbor]
+        for neighbor in range(index - left, index + right + 1)
+        if neighbor != index
+    )
+    if structure == "top":
+        return all(value > neighbor for neighbor in neighbors)
+    return all(value < neighbor for neighbor in neighbors)
+
+
+def _aligned_macd_pivots(
+    macd: list[float],
+    price_indices: list[int],
+    current_index: int,
+    *,
+    structure: str,
+) -> tuple[list[int], list[float], list[float]] | None:
+    candidate_groups: list[list[int]] = []
+    latest_confirmed = current_index - THREE_PUSH_MACD_PIVOT_RIGHT
+    for price_index in price_indices:
+        start = max(
+            THREE_PUSH_MACD_PIVOT_LEFT,
+            price_index - THREE_PUSH_MACD_ALIGNMENT_BARS,
+        )
+        end = min(
+            latest_confirmed,
+            price_index + THREE_PUSH_MACD_ALIGNMENT_BARS,
+        )
+        candidates = [
+            index
+            for index in range(start, end + 1)
+            if _is_macd_pivot(macd, index, structure=structure)
+        ]
+        if not candidates:
+            return None
+        candidate_groups.append(candidates)
+
+    matches: list[tuple[tuple[float, ...], list[int], list[float], list[float]]] = []
+    for raw_indices in product(*candidate_groups):
+        indices = [int(value) for value in raw_indices]
+        if not (indices[0] < indices[1] < indices[2]):
+            continue
+        values = [macd[index] for index in indices]
+        base = abs(values[0])
+        if base <= 0:
+            continue
+        if structure == "top":
+            if not all(value > 0 for value in values):
+                continue
+            weakening = [
+                (values[0] - values[1]) / base,
+                (values[1] - values[2]) / base,
+            ]
+        else:
+            if not all(value < 0 for value in values):
+                continue
+            weakening = [
+                (values[1] - values[0]) / base,
+                (values[2] - values[1]) / base,
+            ]
+        if any(
+            value < THREE_PUSH_MIN_MACD_LEG_WEAKENING
+            for value in weakening
+        ):
+            continue
+        offsets = [
+            abs(index - price_index)
+            for index, price_index in zip(indices, price_indices)
+        ]
+        rank = (
+            float(sum(offsets)),
+            float(max(offsets)),
+            *[float(index) for index in indices],
+        )
+        matches.append((rank, indices, values, weakening))
+    if not matches:
+        return None
+    _rank, indices, values, weakening = min(matches, key=lambda item: item[0])
+    return indices, values, weakening
+
+
 def _three_push_for_structure(
     candles: list[Candle],
     current_index: int,
@@ -350,23 +447,26 @@ def _three_push_for_structure(
     *,
     structure: str,
 ) -> dict[str, Any] | None:
-    third_index = current_index - THREE_PUSH_PIVOT_RIGHT
-    if third_index <= THREE_PUSH_PIVOT_LEFT:
-        return None
-    if not _is_price_pivot(candles, third_index, structure=structure):
+    latest_confirmed = current_index - THREE_PUSH_PIVOT_RIGHT
+    if latest_confirmed <= THREE_PUSH_PIVOT_LEFT:
         return None
     first_search = max(
         THREE_PUSH_PIVOT_LEFT,
-        third_index - THREE_PUSH_LOOKBACK_BARS + 1,
+        current_index - THREE_PUSH_LOOKBACK_BARS + 1,
     )
     pivots = [
         index
-        for index in range(first_search, third_index + 1)
+        for index in range(first_search, latest_confirmed + 1)
         if _is_price_pivot(candles, index, structure=structure)
     ]
     if len(pivots) < 3:
         return None
     first_index, second_index, third_index = pivots[-3:]
+    maximum_formation_lag = (
+        THREE_PUSH_MACD_ALIGNMENT_BARS + THREE_PUSH_MACD_PIVOT_RIGHT
+    )
+    if current_index - third_index > maximum_formation_lag:
+        return None
     if second_index - first_index <= THREE_PUSH_PIVOT_RIGHT:
         return None
     if third_index - second_index <= THREE_PUSH_PIVOT_RIGHT:
@@ -381,9 +481,15 @@ def _three_push_for_structure(
             candles[second_index].high,
             candles[third_index].high,
         ]
-        if not (
-            prices[1] > prices[0] + THREE_PUSH_PRICE_STEP_ATR * atr
-            and prices[2] > prices[1] + THREE_PUSH_PRICE_STEP_ATR * atr
+        price_steps = [
+            (prices[1] - prices[0]) / atr,
+            (prices[2] - prices[1]) / atr,
+        ]
+        if any(value < THREE_PUSH_PRICE_STEP_ATR for value in price_steps):
+            return None
+        if any(
+            candle.high > prices[2]
+            for candle in candles[third_index + 1:current_index + 1]
         ):
             return None
         first_pullback = min(
@@ -398,27 +504,34 @@ def _three_push_for_structure(
             or min(prices[1], prices[2]) - second_pullback < minimum_pullback
         ):
             return None
-        macd_values = [macd[first_index], macd[second_index], macd[third_index]]
-        if not (
-            all(value > 0 for value in macd_values)
-            and macd_values[0] > macd_values[1] > macd_values[2]
-            and macd_values[0] - macd_values[2]
-            >= abs(macd_values[0]) * THREE_PUSH_MIN_MACD_WEAKENING
-        ):
+        macd_match = _aligned_macd_pivots(
+            macd,
+            [first_index, second_index, third_index],
+            current_index,
+            structure=structure,
+        )
+        if macd_match is None:
             return None
+        macd_indices, macd_values, macd_weakening = macd_match
         neckline = second_pullback
         invalidation = prices[2] + THREE_PUSH_INVALIDATION_BUFFER_ATR * atr
         direction = "down"
-        weakening = (macd_values[0] - macd_values[2]) / abs(macd_values[0])
+        weakening = sum(macd_weakening)
     else:
         prices = [
             candles[first_index].low,
             candles[second_index].low,
             candles[third_index].low,
         ]
-        if not (
-            prices[1] < prices[0] - THREE_PUSH_PRICE_STEP_ATR * atr
-            and prices[2] < prices[1] - THREE_PUSH_PRICE_STEP_ATR * atr
+        price_steps = [
+            (prices[0] - prices[1]) / atr,
+            (prices[1] - prices[2]) / atr,
+        ]
+        if any(value < THREE_PUSH_PRICE_STEP_ATR for value in price_steps):
+            return None
+        if any(
+            candle.low < prices[2]
+            for candle in candles[third_index + 1:current_index + 1]
         ):
             return None
         first_pullback = max(
@@ -433,18 +546,19 @@ def _three_push_for_structure(
             or second_pullback - max(prices[1], prices[2]) < minimum_pullback
         ):
             return None
-        macd_values = [macd[first_index], macd[second_index], macd[third_index]]
-        if not (
-            all(value < 0 for value in macd_values)
-            and macd_values[0] < macd_values[1] < macd_values[2]
-            and macd_values[2] - macd_values[0]
-            >= abs(macd_values[0]) * THREE_PUSH_MIN_MACD_WEAKENING
-        ):
+        macd_match = _aligned_macd_pivots(
+            macd,
+            [first_index, second_index, third_index],
+            current_index,
+            structure=structure,
+        )
+        if macd_match is None:
             return None
+        macd_indices, macd_values, macd_weakening = macd_match
         neckline = second_pullback
         invalidation = prices[2] - THREE_PUSH_INVALIDATION_BUFFER_ATR * atr
         direction = "up"
-        weakening = (macd_values[2] - macd_values[0]) / abs(macd_values[0])
+        weakening = sum(macd_weakening)
 
     volumes = [
         candles[first_index].volume,
@@ -456,14 +570,22 @@ def _three_push_for_structure(
         candles[second_index].close_time,
         candles[third_index].close_time,
     ]
+    push_macd_close_times = [
+        candles[index].close_time for index in macd_indices
+    ]
     return {
+        "rule_version": THREE_PUSH_RULE_VERSION,
         "pattern_id": (
-            f"{structure}:" + ":".join(str(value) for value in push_close_times)
+            f"v{THREE_PUSH_RULE_VERSION}:{structure}:p:"
+            + ":".join(str(value) for value in push_close_times)
+            + ":m:"
+            + ":".join(str(value) for value in push_macd_close_times)
         ),
         "structure": structure,
         "direction": direction,
         "push_prices": prices,
         "push_macd": macd_values,
+        "push_macd_close_times": push_macd_close_times,
         "push_volumes": volumes,
         "push_close_times": push_close_times,
         "third_pivot_close_time": candles[third_index].close_time,
@@ -471,6 +593,10 @@ def _three_push_for_structure(
         "invalidation": invalidation,
         "atr": atr,
         "macd_weakening_pct": weakening * 100.0,
+        "macd_step_weakening_pcts": [
+            value * 100.0 for value in macd_weakening
+        ],
+        "price_step_atr_ratios": price_steps,
         "price_progress_pct": abs(prices[2] - prices[0]) / abs(prices[0]) * 100.0,
         "volume_progressive_weakening": volumes[0] > volumes[1] > volumes[2],
         "third_vs_first_volume_ratio": (
@@ -515,12 +641,41 @@ def _detect_three_push_pattern(
     )
 
 
+def _normalize_three_push_track(original: dict[str, Any]) -> dict[str, Any]:
+    track = copy.deepcopy(original) if isinstance(original, dict) else {}
+    if _to_int(track.get("rule_version")) == THREE_PUSH_RULE_VERSION:
+        return track
+    setup = track.get("setup")
+    corrupted_setup = isinstance(setup, dict) and (
+        _to_int(setup.get("bars_since"), -1) < 0
+        or str(setup.get("structure") or "") not in {"top", "bottom"}
+        or _to_float(setup.get("neckline")) <= 0
+        or _to_float(setup.get("invalidation")) <= 0
+        or _to_float(setup.get("atr")) <= 0
+        or not isinstance(setup.get("push_prices"), list)
+        or len(setup.get("push_prices")) != 3
+    )
+    track.update({
+        "rule_version": THREE_PUSH_RULE_VERSION,
+        "setup": None,
+        "last_pattern_id": "",
+        "last_third_pivot_close_time": 0,
+        "pending_context": None,
+    })
+    if corrupted_setup:
+        track["setup_recovery_count"] = max(
+            0,
+            _to_int(track.get("setup_recovery_count")),
+        ) + 1
+    return track
+
+
 def _step_three_push_track(
     original: dict[str, Any],
     candles: list[Candle],
     current_index: int,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    track = copy.deepcopy(original) if isinstance(original, dict) else {}
+    track = _normalize_three_push_track(original)
     candle = candles[current_index]
     track.setdefault("setup", None)
     track.setdefault("last_pattern_id", "")
@@ -533,12 +688,16 @@ def _step_three_push_track(
         neckline = _to_float(setup.get("neckline"))
         invalidation = _to_float(setup.get("invalidation"))
         atr = _to_float(setup.get("atr"))
+        push_prices = setup.get("push_prices")
         if (
             bars_since < 0
+            or _to_int(setup.get("rule_version")) != THREE_PUSH_RULE_VERSION
             or structure not in {"top", "bottom"}
             or neckline <= 0
             or invalidation <= 0
             or atr <= 0
+            or not isinstance(push_prices, list)
+            or len(push_prices) != 3
         ):
             track["setup"] = None
             track["setup_recovery_count"] = max(
@@ -549,6 +708,12 @@ def _step_three_push_track(
             bars_since += 1
             setup["bars_since"] = bars_since
             confirmation_buffer = THREE_PUSH_CONFIRM_BUFFER_ATR * atr
+            third_price = _to_float(push_prices[2])
+            superseded = (
+                structure == "top" and candle.high > third_price
+            ) or (
+                structure == "bottom" and candle.low < third_price
+            )
             invalidated = (
                 structure == "top" and candle.close > invalidation
             ) or (
@@ -561,7 +726,16 @@ def _step_three_push_track(
                 structure == "bottom"
                 and candle.close > neckline + confirmation_buffer
             )
-            if invalidated or bars_since > THREE_PUSH_MAX_CONFIRM_BARS:
+            if (
+                superseded
+                or invalidated
+                or bars_since > THREE_PUSH_MAX_CONFIRM_BARS
+            ):
+                if superseded:
+                    track["last_superseded_pattern_id"] = str(
+                        setup.get("pattern_id") or ""
+                    )
+                    track["last_superseded_close_time"] = candle.close_time
                 track["setup"] = None
             elif confirmed:
                 event = copy.deepcopy(setup)
@@ -892,25 +1066,67 @@ def _event_score(event: dict[str, Any], spec: HorizonSpec, strong_ratio: float) 
     return min(100, max(1, round(45 + tightness * 15 + touch_bonus + volume_bonus + kind_bonus)))
 
 
-def _three_push_score(event: dict[str, Any]) -> int:
-    weakening_bonus = min(
-        20.0,
-        max(0.0, _to_float(event.get("macd_weakening_pct"))) * 0.20,
-    )
-    if bool(event.get("volume_progressive_weakening")):
-        volume_bonus = 8.0
-    elif 0 < _to_float(event.get("third_vs_first_volume_ratio")) < 1:
-        volume_bonus = 4.0
+def _three_push_quality(event: dict[str, Any]) -> dict[str, Any]:
+    existing_quality = str(event.get("structure_quality") or "")
+    if existing_quality in {"strong", "normal", "weak"}:
+        return {
+            "structure_quality": existing_quality,
+            "structure_quality_label": {
+                "strong": "强",
+                "normal": "一般",
+                "weak": "弱",
+            }[existing_quality],
+            "quality_rank": {
+                "strong": 2,
+                "normal": 1,
+                "weak": 0,
+            }[existing_quality],
+            "price_progression_pass": bool(
+                event.get("price_progression_pass", True)
+            ),
+            "macd_three_pivots_pass": bool(
+                event.get("macd_three_pivots_pass", True)
+            ),
+            "volume_confirmation_pass": bool(
+                event.get("volume_confirmation_pass")
+            ),
+            "box_edge_confluence_pass": bool(
+                event.get("box_edge_confluence_pass")
+            ),
+            "neckline_status": (
+                "confirmed"
+                if str(event.get("event") or "").endswith("_confirmed")
+                else "forming"
+            ),
+        }
+    volume_confirmation = bool(event.get("volume_progressive_weakening"))
+    box_confirmation = bool(event.get("box_edge"))
+    if volume_confirmation and box_confirmation:
+        quality = "strong"
+        label = "强"
+        rank = 2
+    elif volume_confirmation or box_confirmation:
+        quality = "normal"
+        label = "一般"
+        rank = 1
     else:
-        volume_bonus = 0.0
-    edge_bonus = 8.0 if event.get("box_edge") else 0.0
-    confirmation_bonus = (
-        12.0 if str(event.get("event") or "").endswith("_confirmed") else 0.0
-    )
-    return min(
-        100,
-        max(1, round(55 + weakening_bonus + volume_bonus + edge_bonus + confirmation_bonus)),
-    )
+        quality = "weak"
+        label = "弱"
+        rank = 0
+    return {
+        "structure_quality": quality,
+        "structure_quality_label": label,
+        "quality_rank": rank,
+        "price_progression_pass": True,
+        "macd_three_pivots_pass": True,
+        "volume_confirmation_pass": volume_confirmation,
+        "box_edge_confluence_pass": box_confirmation,
+        "neckline_status": (
+            "confirmed"
+            if str(event.get("event") or "").endswith("_confirmed")
+            else "forming"
+        ),
+    }
 
 
 def _three_push_box_context(
@@ -1000,16 +1216,30 @@ def _format_three_push_event(event: dict[str, Any]) -> str:
     volumes = [
         max(0.0, _to_float(value)) for value in event.get("push_volumes", [])
     ]
-    if len(prices) != 3 or len(macd) != 3 or len(volumes) != 3:
+    price_steps = [
+        max(0.0, _to_float(value))
+        for value in event.get("price_step_atr_ratios", [])
+    ]
+    macd_steps = [
+        max(0.0, _to_float(value))
+        for value in event.get("macd_step_weakening_pcts", [])
+    ]
+    if (
+        len(prices) != 3
+        or len(macd) != 3
+        or len(volumes) != 3
+        or len(price_steps) != 2
+        or len(macd_steps) != 2
+    ):
         raise ValueError("invalid three-push event payload")
     if bool(event.get("volume_progressive_weakening")):
-        volume_note = "逐次递减"
+        volume_note = "通过（逐次递减）"
     else:
         volume_ratio = _to_float(event.get("third_vs_first_volume_ratio"))
         volume_note = (
-            f"第三推为第一推 {volume_ratio * 100:.0f}%"
+            f"未通过（第三推为第一推 {volume_ratio * 100:.0f}%）"
             if volume_ratio > 0
-            else "仅作辅助"
+            else "未通过（量能不可用）"
         )
     structure = str(event.get("structure") or "")
     confirmed = event_name.endswith("_confirmed")
@@ -1028,17 +1258,30 @@ def _format_three_push_event(event: dict[str, Any]) -> str:
         f"⏰ {when}（第三推 {third_when}）",
         "",
         (
+            "结构质量｜<b>"
+            f"{escape(str(event.get('structure_quality_label') or '一般'), quote=False)}"
+            "</b>"
+        ),
+        (
             f"三推价格｜{_price(prices[0])} → {_price(prices[1])} → "
             f"<b>{_price(prices[2])}</b>"
         ),
         (
-            f"MACD｜{_price(macd[0])} → {_price(macd[1])} → "
-            f"{_price(macd[2])}（弱化 {_to_float(event.get('macd_weakening_pct')):.1f}%）"
+            f"价格推进｜通过（{price_steps[0]:.2f} / {price_steps[1]:.2f} ATR）"
+        ),
+        (
+            f"MACD{'三峰' if structure == 'top' else '三谷'}｜通过（"
+            f"{_price(macd[0])} → {_price(macd[1])} → "
+            f"{_price(macd[2])}）"
+        ),
+        (
+            f"MACD弱化｜通过（{macd_steps[0]:.1f}% / {macd_steps[1]:.1f}%）"
         ),
         (
             f"成交量｜{_compact_number(volumes[0])} → {_compact_number(volumes[1])} → "
-            f"{_compact_number(volumes[2])}（{volume_note}）"
+            f"{_compact_number(volumes[2])}"
         ),
+        f"量能确认｜{volume_note}",
         (
             f"结构｜颈线 {_price(_to_float(event.get('neckline')))} ｜ "
             f"失效位 {_price(_to_float(event.get('invalidation')))}"
@@ -1050,14 +1293,18 @@ def _format_three_push_event(event: dict[str, Any]) -> str:
         )
         edge_name = "上沿" if structure == "top" else "下沿"
         lines.append(
-            f"箱体共振｜第三推{relation}{escape(str(event.get('box_horizon_label') or ''), quote=False)}"
+            f"箱体位置｜通过：第三推{relation}{escape(str(event.get('box_horizon_label') or ''), quote=False)}"
             f"箱体{edge_name} {_price(_to_float(event.get('box_edge')))}"
         )
+    else:
+        lines.append("箱体位置｜未通过（无合格箱体边缘共振）")
     close_label = "确认收盘" if confirmed else "当前收盘"
     lines.extend([
+        f"{close_label}｜<b>{_price(_to_float(event.get('close')))}</b>",
         (
-            f"{close_label}｜<b>{_price(_to_float(event.get('close')))}</b> ｜ "
-            f"评分 <b>{int(event.get('score') or 0)}/100</b>"
+            "颈线状态｜已确认"
+            if confirmed
+            else "颈线状态｜形成中（等待收盘确认）"
         ),
         "",
         f"🧭 观察：{escape(observation, quote=False)}",
@@ -1301,6 +1548,10 @@ class ConsolidationBreakoutRadar:
         closed_candles = 0
         suppressed_horizon_events = 0
         three_push_state_recoveries = 0
+        three_push_candidate_count = 0
+        three_push_strong_count = 0
+        three_push_normal_count = 0
+        three_push_weak_suppressed_count = 0
         strong_ratio = max(
             0.01,
             _to_float(getattr(self.settings, "consolidation_breakout_strong_volume_ratio", 1.20), 1.20),
@@ -1385,6 +1636,18 @@ class ConsolidationBreakoutRadar:
                     )
                     working["three_push"] = (
                         copy.deepcopy(existing) if isinstance(existing, dict) else {}
+                    )
+                    recovery_before_normalize = _to_int(
+                        working["three_push"].get("setup_recovery_count")
+                    )
+                    working["three_push"] = _normalize_three_push_track(
+                        working["three_push"]
+                    )
+                    three_push_state_recoveries += max(
+                        0,
+                        _to_int(
+                            working["three_push"].get("setup_recovery_count")
+                        ) - recovery_before_normalize,
                     )
                     last_close = _to_int(
                         working["three_push"].get("last_close_time") or 0
@@ -1496,6 +1759,58 @@ class ConsolidationBreakoutRadar:
                             three_push_state_recoveries += recovery_delta
                             working["three_push"] = updated
                             three_push_processed = True
+                            superseded_pattern_id = str(
+                                updated.get("last_superseded_pattern_id") or ""
+                            )
+                            superseded_now = (
+                                bool(superseded_pattern_id)
+                                and superseded_pattern_id
+                                != str(
+                                    track_before_step.get(
+                                        "last_superseded_pattern_id"
+                                    )
+                                    or ""
+                                )
+                            )
+                            if superseded_now:
+                                stale_event_ids = {
+                                    str(event.get("event_id") or "")
+                                    for event in events
+                                    if str(event.get("pattern_id") or "")
+                                    == superseded_pattern_id
+                                    and str(event.get("event") or "").endswith(
+                                        "_forming"
+                                    )
+                                }
+                                if stale_event_ids:
+                                    events[:] = [
+                                        event
+                                        for event in events
+                                        if str(event.get("event_id") or "")
+                                        not in stale_event_ids
+                                    ]
+                                    required_by_key[three_push_key] = [
+                                        event_id
+                                        for event_id in required_by_key.get(
+                                            three_push_key,
+                                            [],
+                                        )
+                                        if event_id not in stale_event_ids
+                                    ]
+                                    for state_update in state_updates:
+                                        if (
+                                            state_update.get("key")
+                                            != three_push_key
+                                        ):
+                                            continue
+                                        state_update["required_event_ids"] = [
+                                            event_id
+                                            for event_id in state_update.get(
+                                                "required_event_ids",
+                                                [],
+                                            )
+                                            if event_id not in stale_event_ids
+                                        ]
                             if raw_event is not None:
                                 context_fields = (
                                     "box_horizon",
@@ -1505,11 +1820,21 @@ class ConsolidationBreakoutRadar:
                                     "box_lower",
                                     "box_edge_signed_atr",
                                 )
+                                quality_fields = (
+                                    "structure_quality",
+                                    "structure_quality_label",
+                                    "quality_rank",
+                                    "price_progression_pass",
+                                    "macd_three_pivots_pass",
+                                    "volume_confirmation_pass",
+                                    "box_edge_confluence_pass",
+                                )
                                 context = {
                                     field: raw_event[field]
                                     for field in context_fields
                                     if field in raw_event
                                 }
+                                saved_quality: dict[str, Any] = {}
                                 pattern_id = str(
                                     raw_event.get("pattern_id") or ""
                                 )
@@ -1522,11 +1847,27 @@ class ConsolidationBreakoutRadar:
                                     == pattern_id
                                     and isinstance(saved_pending.get("context"), dict)
                                 )
-                                if not context and saved_matches:
+                                if saved_matches:
                                     saved_context = saved_pending["context"]
-                                    context = {
+                                    saved_event = saved_pending.get("event")
+                                    if isinstance(saved_event, dict):
+                                        raw_event.update(
+                                            copy.deepcopy(saved_event)
+                                        )
+                                        context = {
+                                            field: raw_event[field]
+                                            for field in context_fields
+                                            if field in raw_event
+                                        }
+                                    if not context:
+                                        context = {
+                                            field: saved_context[field]
+                                            for field in context_fields
+                                            if field in saved_context
+                                        }
+                                    saved_quality = {
                                         field: saved_context[field]
-                                        for field in context_fields
+                                        for field in quality_fields
                                         if field in saved_context
                                     }
                                 new_pattern_event = (
@@ -1545,67 +1886,88 @@ class ConsolidationBreakoutRadar:
                                         raw_event,
                                         working,
                                     )
-                                if new_pattern_event and not saved_matches:
-                                    checkpoint = copy.deepcopy(track_before_step)
-                                    if recovery_delta > 0:
-                                        checkpoint["setup"] = None
-                                        checkpoint["setup_recovery_count"] = (
-                                            _to_int(
-                                                updated.get(
-                                                    "setup_recovery_count"
-                                                )
-                                            )
-                                        )
-                                    checkpoint["pending_context"] = {
-                                        "pattern_id": pattern_id,
-                                        "context": copy.deepcopy(context),
-                                    }
-                                    state_updates.append({
-                                        "key": three_push_key,
-                                        "state": checkpoint,
-                                        "required_event_ids": list(
-                                            required_by_key.get(
-                                                three_push_key,
-                                                [],
-                                            )
-                                        ),
-                                    })
                                 raw_event.update(context)
+                                raw_event.update(saved_quality)
+                                quality = _three_push_quality(raw_event)
+                                raw_event.update(quality)
                                 if raw_event["event"].endswith("_forming"):
                                     setup = updated.get("setup")
                                     if isinstance(setup, dict):
                                         setup.update(context)
+                                        setup.update(quality)
                                         setup["box_context_frozen"] = True
                                 updated["pending_context"] = None
-                                raw_event.update({
-                                    "schema": "three_push_divergence.v1",
-                                    "divergence": "price_macd_three_push",
-                                    "symbol": symbol,
-                                    "timeframe": timeframe,
-                                    "horizon": "three_push",
-                                    "horizon_label": (
-                                        str(raw_event.get("box_horizon_label") or "独立")
-                                    ),
-                                    "event_time": raw_event["close_time"],
-                                })
-                                event_id = (
-                                    f"three_push_divergence.v1:{symbol}:{timeframe}:"
-                                    f"{raw_event['event']}:"
-                                    f"{int(raw_event.get('third_pivot_close_time') or 0)}:"
-                                    f"{raw_event['close_time']}"
+                                three_push_candidate_count += 1
+                                structure_quality = str(
+                                    raw_event.get("structure_quality") or "weak"
                                 )
-                                raw_event["event_id"] = event_id
-                                raw_event["dedup_key"] = event_id
-                                raw_event["priority"] = EVENT_PRIORITY[
-                                    str(raw_event["event"])
-                                ]
-                                raw_event["score"] = _three_push_score(raw_event)
-                                raw_event["text"] = _format_event(raw_event)
-                                bar_events.append(raw_event)
-                                required_by_key.setdefault(
-                                    three_push_key,
-                                    [],
-                                ).append(event_id)
+                                if structure_quality == "weak":
+                                    three_push_weak_suppressed_count += 1
+                                else:
+                                    if structure_quality == "strong":
+                                        three_push_strong_count += 1
+                                    else:
+                                        three_push_normal_count += 1
+                                    if new_pattern_event and not saved_matches:
+                                        checkpoint = copy.deepcopy(
+                                            track_before_step
+                                        )
+                                        if recovery_delta > 0:
+                                            checkpoint["setup"] = None
+                                            checkpoint[
+                                                "setup_recovery_count"
+                                            ] = _to_int(
+                                                updated.get(
+                                                    "setup_recovery_count"
+                                                )
+                                            )
+                                        frozen_context = copy.deepcopy(context)
+                                        frozen_context.update(quality)
+                                        checkpoint["pending_context"] = {
+                                            "pattern_id": pattern_id,
+                                            "context": frozen_context,
+                                            "event": copy.deepcopy(raw_event),
+                                        }
+                                        state_updates.append({
+                                            "key": three_push_key,
+                                            "state": checkpoint,
+                                            "required_event_ids": list(
+                                                required_by_key.get(
+                                                    three_push_key,
+                                                    [],
+                                                )
+                                            ),
+                                        })
+                                    raw_event.update({
+                                        "schema": "three_push_divergence.v2",
+                                        "divergence": "price_macd_three_push",
+                                        "symbol": symbol,
+                                        "timeframe": timeframe,
+                                        "horizon": "three_push",
+                                        "horizon_label": str(
+                                            raw_event.get(
+                                                "box_horizon_label"
+                                            )
+                                            or "独立"
+                                        ),
+                                        "event_time": raw_event["close_time"],
+                                    })
+                                    event_id = (
+                                        f"three_push_divergence.v2:{symbol}:"
+                                        f"{timeframe}:{raw_event['event']}:"
+                                        f"{pattern_id}:{raw_event['close_time']}"
+                                    )
+                                    raw_event["event_id"] = event_id
+                                    raw_event["dedup_key"] = event_id
+                                    raw_event["priority"] = EVENT_PRIORITY[
+                                        str(raw_event["event"])
+                                    ]
+                                    raw_event["text"] = _format_event(raw_event)
+                                    bar_events.append(raw_event)
+                                    required_by_key.setdefault(
+                                        three_push_key,
+                                        [],
+                                    ).append(event_id)
                     for spec, key in processed_on_bar:
                         state_updates.append({
                             "key": key,
@@ -1624,7 +1986,11 @@ class ConsolidationBreakoutRadar:
                         bar_events,
                         key=lambda event: (
                             int(event.get("priority") or 0),
-                            int(event.get("score") or 0),
+                            int(
+                                event.get("quality_rank")
+                                or event.get("score")
+                                or 0
+                            ),
                         ),
                         reverse=True,
                     ))
@@ -1671,6 +2037,12 @@ class ConsolidationBreakoutRadar:
             "three_push_event_count": sum(
                 str(event.get("event") or "").startswith("three_push_")
                 for event in outbound_events
+            ),
+            "three_push_candidate_count": three_push_candidate_count,
+            "three_push_strong_count": three_push_strong_count,
+            "three_push_normal_count": three_push_normal_count,
+            "three_push_weak_suppressed_count": (
+                three_push_weak_suppressed_count
             ),
             "three_push_state_recoveries": three_push_state_recoveries,
             "state_update_count": len(state_updates),

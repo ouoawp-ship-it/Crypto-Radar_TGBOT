@@ -152,17 +152,24 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "box_lower", "box_age", "width_pct", "volume_ratio", "event_time",
     "breakout_distance_pct", "bars_since_breakout",
     "pattern_id", "structure", "direction", "neckline", "invalidation", "atr",
-    "formed_close_time", "third_pivot_close_time", "push_prices",
-    "push_macd", "push_volumes", "push_close_times",
+    "rule_version", "formed_close_time", "third_pivot_close_time", "push_prices",
+    "push_macd", "push_volumes", "push_close_times", "push_macd_close_times",
+    "price_step_atr_ratios", "macd_step_weakening_pcts",
     "macd_weakening_pct", "price_progress_pct",
     "volume_progressive_weakening", "third_vs_first_volume_ratio",
     "box_horizon", "box_edge", "box_edge_signed_atr",
+    "structure_quality", "structure_quality_label", "quality_rank",
+    "price_progression_pass", "macd_three_pivots_pass",
+    "volume_confirmation_pass", "box_edge_confluence_pass", "neckline_status",
 })
 THREE_PUSH_LIST_FIELDS = frozenset({
     "push_prices",
     "push_macd",
     "push_volumes",
     "push_close_times",
+    "push_macd_close_times",
+    "price_step_atr_ratios",
+    "macd_step_weakening_pcts",
 })
 
 
@@ -293,6 +300,13 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
                 safe_values.append(item)
             payload[key] = safe_values
     return payload
+
+
+def _is_three_push_record(record: dict[str, Any]) -> bool:
+    return (
+        str(record.get("event") or "").startswith("three_push_")
+        or str(record.get("horizon") or "") == "three_push"
+    )
 
 
 def _module_for_template(template_id: str) -> str:
@@ -607,11 +621,17 @@ class SignalEventStore:
         symbol_count = len(prepared_records)
         for record in prepared_records:
             normalized_symbol = str(record.get("symbol") or "").upper()
-            score = (
-                _structured_number(record, "score", "total_score")
-                if structured_mode
-                else _extract_symbol_score(text, normalized_symbol, symbol_count=symbol_count)
-            )
+            is_three_push = structured_mode and _is_three_push_record(record)
+            if is_three_push:
+                score = None
+            elif structured_mode:
+                score = _structured_number(record, "score", "total_score")
+            else:
+                score = _extract_symbol_score(
+                    text,
+                    normalized_symbol,
+                    symbol_count=symbol_count,
+                )
             stage = str(
                 record.get("stage")
                 or record.get("category")
@@ -633,6 +653,9 @@ class SignalEventStore:
             }
             if structured_mode:
                 facts = _structured_payload(record)
+                if is_three_push:
+                    facts.pop("score", None)
+                    facts.pop("total_score", None)
                 if module in {"flow", "pulse", "launch", "funding"}:
                     facts.setdefault("evaluation_eligible", True)
                 payload["facts"] = facts
