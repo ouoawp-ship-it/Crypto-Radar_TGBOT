@@ -111,6 +111,20 @@ paopao telegram-test
 完整扫描周期、240 日箱体、假突破和三推确认规则见
 [盘整突破雷达说明](CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
+盘整突破和三推 Telegram 信号会附带价格 K 线、成交量和 MACD 图。
+箱体图标出上下沿和事件 K 线，三推图标出 P1/P2/P3、MACD 三枢轴、颈线和
+失效位。绘图只复用已扫描的闭合 K 线，不增加行情请求；渲染或 caption
+校验失败会自动降级为原文字。这项展示升级不改变信号判断、话题路由、
+`--send --confirm-real-send` 双门禁或两个默认关闭的开关。
+
+已有“盘整突破雷达”话题升级后，需要显式刷新本版图表说明；命令不会创建新话题：
+
+```bash
+.venv/bin/python main.py telegram-topic-refresh \
+  --topic-template TG_CONSOLIDATION_BREAKOUT \
+  --send --confirm-real-send
+```
+
 ## 更新
 
 ```bash
@@ -122,12 +136,13 @@ bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 通过 Tag CI 的 annotated Tag，并使用独立入口：
 
 ```bash
-bash scripts/deploy_tag.sh --check-tag v2.4.1
-bash scripts/deploy_tag.sh --tag v2.4.1 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.4.2
+bash scripts/deploy_tag.sh --tag v2.4.2 --yes --refresh-pulse-topic-intro
 ```
 
 `--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会
-刷新置顶说明。执行时脚本内部仍同时提供两重真实发送确认。
+刷新置顶说明。执行时脚本内部仍同时提供两重真实发送确认。该参数只刷新脉冲
+雷达；盘整突破说明使用上面的独立刷新命令。
 
 该入口会在停服后备份私有配置、运行状态、数据库和 systemd 定义；部署失败
 自动回滚。它不会打印或用示例值覆盖服务器密钥。完整门禁和人工回滚命令见

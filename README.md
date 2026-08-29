@@ -1,6 +1,6 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。当前版本延续 BOT-only 运行时和全市场盘整突破雷达，并将非重绘的三推顶/底背离升级到 rule v2：价格与 MACD 使用同周期独立枢轴，信号确认前的新极值会淘汰旧第三推，推送改用可解释的结构质量标签；脉冲雷达的严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流保持不变。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。当前版本延续 BOT-only 运行时和全市场盘整突破雷达，并将非重绘的三推顶/底背离升级到 rule v2：价格与 MACD 使用同周期独立枢轴，信号确认前的新极值会淘汰旧第三推，推送改用可解释的结构质量标签。盘整突破与三推 Telegram 信号现在同时附带价格 K 线、成交量和 MACD 图；脉冲雷达的严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流保持不变。
 
 ## 核心功能
 
@@ -8,7 +8,7 @@
 - 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
-- 盘整突破雷达：默认关闭；扫描 4H、日线、周线的 24/72/240 根冻结箱体，推送确认突破、假突破/假跌破、回踩、扫盘，以及独立开关控制的三推顶/底背离形成与确认。三推只推送“强”或“一般”质量结构，“弱”结构仅更新内部状态和扫描诊断。
+- 盘整突破雷达：默认关闭；扫描 4H、日线、周线的 24/72/240 根冻结箱体，推送确认突破、假突破/假跌破、回踩、扫盘，以及独立开关控制的三推顶/底背离形成与确认。每条信号附带价格 K 线、成交量和 MACD 图；三推只推送“强”或“一般”质量结构，“弱”结构仅更新内部状态和扫描诊断。
 - 公告风险：独立解析并推送 Binance 官方上新、下架和活动公告，不参与脉冲雷达分类。
 - 山寨合约异动雷达：P1 生成候选池，P2 在现有唯一 WebSocket 内做多因子确认，Final 提供可恢复的生产运行；生产调度和真实发送均默认关闭。
 - 信号有效性：按 15m、1h、4h、24h 追踪已发送信号的方向收益、命中率、质量门控和评分分层；只生成复盘数据，不自动修改生产参数。
@@ -85,6 +85,7 @@ python main.py database-backup
 python main.py telegram-test
 python main.py telegram-topic-setup --topic-template TG_RADAR_SUMMARY --send --confirm-real-send
 python main.py telegram-topic-refresh --topic-template TG_LAUNCH_ALERT --send --confirm-real-send
+python main.py telegram-topic-refresh --topic-template TG_CONSOLIDATION_BREAKOUT --send --confirm-real-send
 python main.py private-control
 python main.py once
 python main.py pulse
@@ -117,10 +118,18 @@ python main.py live --send --confirm-real-send
 `/100` 分数，而是列出结构质量及价格推进、MACD 三枢轴、量能、箱体位置和颈线
 状态。箱体突破等原有事件的评分口径不变。
 
+图表只是 Telegram 表达层：箱体事件标出冻结上沿、下沿和事件 K 线；
+三推事件同时标出价格 P1/P2/P3、三个独立 MACD 枢轴、颈线和失效位。
+图表复用该信号已经扫描的闭合 K 线，不为绘图额外请求行情；渲染或 Telegram
+caption 校验失败时自动降级为原文字信号。加图不改变信号判断、专属话题路由、
+`--send --confirm-real-send` 双门禁或盘整突破/三推的默认开关。
+
 `telegram-topic-refresh` 只刷新已经存在的话题，不会创建新话题；说明版本和
 正文都未变化时不会重复发送。服务器更新脚本只有显式增加
 `--refresh-pulse-topic-intro` 才会执行这项真实 Telegram 操作，内部仍同时使用
-`--send --confirm-real-send`。`pulse-review-report` 只读取已回填的本地复盘数据，
+`--send --confirm-real-send`；它只刷新脉冲雷达，不会刷新盘整突破话题。已有盘整
+突破话题升级到本版 K 线图说明时，需显式执行上面的
+`TG_CONSOLIDATION_BREAKOUT` 刷新命令。`pulse-review-report` 只读取已回填的本地复盘数据，
 显示真实样本数、各窗口命中率和本周 TOP 榜，不访问 Telegram，也不会自动刷榜。
 
 脉冲示例卡片可单独验证当前正式的“K线图 + 文案”链路：
@@ -167,8 +176,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.4.1
-bash scripts/deploy_tag.sh --tag v2.4.1 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.4.2
+bash scripts/deploy_tag.sh --tag v2.4.2 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

@@ -41,6 +41,7 @@ THREE_PUSH_MAX_CONFIRM_BARS = 12
 THREE_PUSH_MIN_MACD_LEG_WEAKENING = 0.05
 THREE_PUSH_RULE_VERSION = 2
 THREE_PUSH_EDGE_TOLERANCE_ATR = 0.50
+CHART_HISTORY_LIMIT = 264
 
 
 @dataclass(frozen=True)
@@ -1046,6 +1047,55 @@ def _compact_number(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+def _chart_payload(
+    candles: list[Candle],
+    current_index: int,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    start_index = max(0, current_index - CHART_HISTORY_LIMIT + 1)
+    visible = candles[start_index:current_index + 1]
+    macd = _macd_line(candles[:current_index + 1])[start_index:]
+    box_age = max(0, _to_int(event.get("box_age")))
+    frozen_box_start = max(
+        0,
+        _to_int(event.get("box_start_close_time")),
+    )
+    bars_since_breakout = max(
+        0,
+        _to_int(event.get("bars_since_breakout")),
+    )
+    if frozen_box_start > 0:
+        box_start_close_time = frozen_box_start
+    elif box_age > 0:
+        box_start_close_time = candles[
+            max(0, current_index - box_age)
+        ].close_time
+    else:
+        box_start_close_time = 0
+    breakout_start_close_time = (
+        candles[max(0, current_index - bars_since_breakout)].close_time
+        if bars_since_breakout > 0
+        else 0
+    )
+    return {
+        "candles": [
+            {
+                "open_time": candle.open_time,
+                "close_time": candle.close_time,
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume,
+            }
+            for candle in visible
+        ],
+        "macd": list(macd),
+        "box_start_close_time": box_start_close_time,
+        "breakout_start_close_time": breakout_start_close_time,
+    }
+
+
 def _event_score(event: dict[str, Any], spec: HorizonSpec, strong_ratio: float) -> int:
     width_atr = max(0.0, _to_float(event.get("box_width_atr")))
     tightness = max(0.0, 1.0 - width_atr / max(spec.max_width_atr, 0.01))
@@ -1132,6 +1182,8 @@ def _three_push_quality(event: dict[str, Any]) -> dict[str, Any]:
 def _three_push_box_context(
     event: dict[str, Any],
     horizon_tracks: dict[str, dict[str, Any]],
+    candles: list[Candle],
+    current_index: int,
 ) -> dict[str, Any]:
     prices = event.get("push_prices")
     if not isinstance(prices, list) or len(prices) != 3:
@@ -1170,12 +1222,17 @@ def _three_push_box_context(
         candidates,
         key=lambda item: (item[0], item[1]),
     )
+    box_age = spec.length + max(0, _to_int(box.get("active_bars")))
     return {
         "box_horizon": spec.name,
         "box_horizon_label": spec.label,
         "box_edge": edge,
         "box_upper": _to_float(box.get("upper")),
         "box_lower": _to_float(box.get("lower")),
+        "box_age": box_age,
+        "box_start_close_time": candles[
+            max(0, current_index - box_age)
+        ].close_time,
         "box_edge_signed_atr": signed_distance,
     }
 
@@ -1366,6 +1423,7 @@ class ConsolidationBreakoutRadar:
         return {
             "template_id": TEMPLATE_ID,
             "events": [],
+            "chart_payloads": {},
             "state_updates": [],
             "diagnostics": {
                 "status": reason,
@@ -1542,6 +1600,7 @@ class ConsolidationBreakoutRadar:
         state_updates: list[dict[str, Any]] = []
         required_by_key: dict[str, list[str]] = {}
         events: list[dict[str, Any]] = []
+        chart_contexts: dict[str, tuple[list[Candle], int]] = {}
         errors: list[dict[str, str]] = []
         scanned_pairs = 0
         successful_pairs_by_symbol: dict[str, int] = {}
@@ -1789,6 +1848,8 @@ class ConsolidationBreakoutRadar:
                                         if str(event.get("event_id") or "")
                                         not in stale_event_ids
                                     ]
+                                    for event_id in stale_event_ids:
+                                        chart_contexts.pop(event_id, None)
                                     required_by_key[three_push_key] = [
                                         event_id
                                         for event_id in required_by_key.get(
@@ -1818,6 +1879,8 @@ class ConsolidationBreakoutRadar:
                                     "box_edge",
                                     "box_upper",
                                     "box_lower",
+                                    "box_age",
+                                    "box_start_close_time",
                                     "box_edge_signed_atr",
                                 )
                                 quality_fields = (
@@ -1885,6 +1948,8 @@ class ConsolidationBreakoutRadar:
                                     context = _three_push_box_context(
                                         raw_event,
                                         working,
+                                        candles,
+                                        index,
                                     )
                                 raw_event.update(context)
                                 raw_event.update(saved_quality)
@@ -1982,7 +2047,7 @@ class ConsolidationBreakoutRadar:
                                 required_by_key.get(three_push_key, [])
                             ),
                         })
-                    events.extend(sorted(
+                    ordered_bar_events = sorted(
                         bar_events,
                         key=lambda event: (
                             int(event.get("priority") or 0),
@@ -1993,12 +2058,29 @@ class ConsolidationBreakoutRadar:
                             ),
                         ),
                         reverse=True,
-                    ))
+                    )
+                    for event in ordered_bar_events:
+                        event_id = str(event.get("event_id") or "")
+                        if event_id:
+                            chart_contexts[event_id] = (candles, index)
+                    events.extend(ordered_bar_events)
         max_signals = max(
             0,
             int(getattr(self.settings, "consolidation_breakout_max_signals_per_scan", 8)),
         )
         outbound_events = events[:max_signals]
+        outbound_chart_payloads: dict[str, dict[str, Any]] = {}
+        for event in outbound_events:
+            event_id = str(event.get("event_id") or "")
+            context = chart_contexts.get(event_id)
+            if not event_id or context is None:
+                continue
+            candles, event_index = context
+            outbound_chart_payloads[event_id] = _chart_payload(
+                candles,
+                event_index,
+                event,
+            )
         withheld_event_ids = {
             str(event.get("event_id") or "") for event in events[max_signals:]
         }
@@ -2057,6 +2139,7 @@ class ConsolidationBreakoutRadar:
         return {
             "template_id": TEMPLATE_ID,
             "events": outbound_events,
+            "chart_payloads": outbound_chart_payloads,
             "state_updates": state_updates,
             "rotation_update": rotation_update,
             "diagnostics": diagnostics,
