@@ -8,9 +8,14 @@ from typing import Any
 from unittest.mock import patch
 
 from config import Settings
+from radars.consolidation_breakout.chart import (
+    PNG_SIGNATURE,
+    render_consolidation_chart_png,
+)
 from radars.consolidation_breakout.radar import (
     Candle,
     ConsolidationBreakoutRadar,
+    _chart_payload,
     _detect_three_push_pattern,
     _step_three_push_track,
     _three_push_quality,
@@ -240,6 +245,27 @@ def closed_now(rows: list[list[Any]], delay_sec: int = 90) -> int:
 
 
 class ConsolidationBreakoutRadarTests(unittest.TestCase):
+    def assert_chart_payload(
+        self,
+        result: dict[str, Any],
+        event: dict[str, Any],
+        *,
+        cutoff_ms: int,
+    ) -> None:
+        event_id = str(event["event_id"])
+        payload = result["chart_payloads"][event_id]
+        chart_candles = payload["candles"]
+        close_times = [int(candle["close_time"]) for candle in chart_candles]
+
+        self.assertTrue(chart_candles)
+        self.assertLessEqual(len(chart_candles), 264)
+        self.assertEqual(len(payload["macd"]), len(chart_candles))
+        self.assertEqual(close_times, sorted(set(close_times)))
+        self.assertTrue(all(close_time <= cutoff_ms for close_time in close_times))
+        self.assertEqual(close_times[-1], int(event["close_time"]))
+        for field in ("candles", "macd", "chart_payload", "chart_payloads"):
+            self.assertNotIn(field, event)
+
     def test_zero_volume_floor_does_not_depend_on_ticker_snapshot(self) -> None:
         class MissingTickerSource(UniverseSource):
             def ticker_24h(self) -> list[dict[str, str]]:
@@ -592,6 +618,27 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
             self.assertIn("长期箱体", event["text"])
             self.assertIn("未来3根K线", event["text"])
             self.assertGreaterEqual(result["diagnostics"]["suppressed_horizon_events"], 2)
+            self.assertEqual(set(result["chart_payloads"]), {event["event_id"]})
+            expected_box_start_index = (
+                len(rows) - 1 - int(event["box_age"])
+            )
+            self.assertEqual(
+                result["chart_payloads"][event["event_id"]][
+                    "box_start_close_time"
+                ],
+                int(rows[expected_box_start_index][6]),
+            )
+            self.assert_chart_payload(
+                result,
+                event,
+                cutoff_ms=int(rows[-1][6]),
+            )
+            chart = render_consolidation_chart_png(
+                event=event,
+                chart_payload=result["chart_payloads"][event["event_id"]],
+            )
+            self.assertTrue(chart.startswith(PNG_SIGNATURE))
+            self.assertLess(len(chart), 10 * 1024 * 1024)
 
     def test_fake_breakout_is_detected_with_frozen_endpoints(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1172,6 +1219,19 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 "three_push_top_forming",
             )
             self.assertIn("右侧2根闭合K线", three_push_events[0]["text"])
+            self.assert_chart_payload(
+                closed_result,
+                three_push_events[0],
+                cutoff_ms=int(rows[-1][6]),
+            )
+            chart = render_consolidation_chart_png(
+                event=three_push_events[0],
+                chart_payload=closed_result["chart_payloads"][
+                    three_push_events[0]["event_id"]
+                ],
+            )
+            self.assertTrue(chart.startswith(PNG_SIGNATURE))
+            self.assertLess(len(chart), 10 * 1024 * 1024)
 
     def test_three_push_text_uses_explainable_quality_without_score(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1620,6 +1680,14 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 first["structure_quality_label"],
                 first["text"],
                 first["box_horizon"],
+                first["box_age"],
+                first["box_start_close_time"],
+            )
+            self.assertEqual(
+                result["chart_payloads"][first["event_id"]][
+                    "box_start_close_time"
+                ],
+                first["box_start_close_time"],
             )
             third_push_index = next(
                 index
@@ -1661,6 +1729,8 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                         replay["structure_quality_label"],
                         replay["text"],
                         replay["box_horizon"],
+                        replay["box_age"],
+                        replay["box_start_close_time"],
                     ),
                     expected,
                 )
@@ -1814,15 +1884,36 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 breakout_up(250),
                 kline(251, high=103.0, low=95.5, close=96.0),
             ])
-            capped = radar.build(KlineSource(rows), now_ms=closed_now(rows))  # type: ignore[arg-type]
+            with patch(
+                "radars.consolidation_breakout.radar._chart_payload",
+                wraps=_chart_payload,
+            ) as chart_builder:
+                capped = radar.build(
+                    KlineSource(rows),
+                    now_ms=closed_now(rows),
+                )  # type: ignore[arg-type]
+            self.assertEqual(chart_builder.call_count, 1)
             self.assertEqual(len(capped["events"]), 1)
             self.assertEqual(capped["events"][0]["event"], "breakout_up")
             self.assertEqual(capped["diagnostics"]["withheld_event_count"], 1)
+            self.assertEqual(
+                set(capped["chart_payloads"]),
+                {capped["events"][0]["event_id"]},
+            )
             radar.commit(capped, [capped["events"][0]["event_id"]])
 
             retried = radar.build(KlineSource(rows), now_ms=closed_now(rows))  # type: ignore[arg-type]
             self.assertEqual(len(retried["events"]), 1)
             self.assertEqual(retried["events"][0]["event"], "breakout_down")
+            self.assertEqual(
+                set(retried["chart_payloads"]),
+                {retried["events"][0]["event_id"]},
+            )
+            self.assert_chart_payload(
+                retried,
+                retried["events"][0],
+                cutoff_ms=int(rows[-1][6]),
+            )
 
 
 if __name__ == "__main__":

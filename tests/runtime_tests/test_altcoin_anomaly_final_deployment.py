@@ -130,12 +130,12 @@ class AltcoinAnomalyFinalDeploymentTests(unittest.TestCase):
         self.assertIn("python -m unittest discover", workflow)
 
     def test_release_version_and_final_runbook_are_consistent(self) -> None:
-        self.assertEqual(self.read("VERSION").strip(), "v2.4.1")
+        self.assertEqual(self.read("VERSION").strip(), "v2.4.2")
         readme = self.read("README.md")
         runbook = self.read("docs/ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md")
 
         self.assertIn("ALTCOIN_CONTRACT_ANOMALY_FINAL_CN.md", readme)
-        self.assertIn("deploy_tag.sh --tag v2.4.1 --yes", readme)
+        self.assertIn("deploy_tag.sh --tag v2.4.2 --yes", readme)
         self.assertIn("每个进程只有一个", runbook)
         self.assertIn("不会自动创建该话题", runbook)
         self.assertIn("不代表综合分数、成功率或涨跌概率", runbook)

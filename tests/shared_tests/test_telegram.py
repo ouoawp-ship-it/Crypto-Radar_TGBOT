@@ -1443,11 +1443,16 @@ class TelegramGatewayTests(unittest.TestCase):
                 "原箱体事件评分不变",
                 "不会因短/中/长期三个箱体重复",
                 "三推背离独立开关当前已启用",
+                "随信号K线图",
+                "同周期价格K线、成交量和MACD",
+                "价格P1/P2/P3、三个独立MACD枢轴",
+                "只复用本轮已闭合K线，不增加行情请求",
+                "不参与信号判断、质量标签、排序或去重",
             ):
                 self.assertIn(phrase, intro)
             self.assertEqual(
                 topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-08-29-consolidation-breakout-v4",
+                "2026-08-29-consolidation-breakout-v5",
             )
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

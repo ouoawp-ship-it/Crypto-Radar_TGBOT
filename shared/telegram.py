@@ -300,7 +300,7 @@ DEFAULT_TOPIC_INTRO_VERSION = "2026-07-16-core-radar-v1"
 TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
-    "TG_CONSOLIDATION_BREAKOUT": "2026-08-29-consolidation-breakout-v4",
+    "TG_CONSOLIDATION_BREAKOUT": "2026-08-29-consolidation-breakout-v5",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -531,6 +531,12 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             "- 三推卡片不再显示未经回测校准的/100评分，直接列出价格、MACD、量能、箱体位置和颈线状态；原箱体事件评分不变。",
             "- 三推按币种和周期独立检测，不会因短/中/长期三个箱体重复。",
             f"- 三推背离独立开关当前{'已启用' if getattr(settings, 'consolidation_breakout_three_push_enable', False) else '未启用'}。",
+            "",
+            "<b>随信号K线图</b>",
+            "- 每条信号附带同周期价格K线、成交量和MACD；箱体图标出冻结上下沿与事件K线。",
+            "- 三推图分别标出价格P1/P2/P3、三个独立MACD枢轴、冻结颈线和失效位。",
+            "- 图表只复用本轮已闭合K线，不增加行情请求；制图或图片校验失败时安全降级为原文字。",
+            "- 图表只用于辅助复核，不参与信号判断、质量标签、排序或去重。",
             "",
             "数据来自 Binance USDⓈ-M Futures 已闭合K线；仅作结构预警，不构成投资建议。",
         ])

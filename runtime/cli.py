@@ -26,7 +26,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -36,6 +36,10 @@ from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
 from radars.consolidation_breakout.radar import ConsolidationBreakoutRadar
+from radars.consolidation_breakout.chart import (
+    PNG_SIGNATURE as CONSOLIDATION_CHART_PNG_SIGNATURE,
+    render_consolidation_chart_png,
+)
 from radars.announcement_risk.radar import AnnouncementRiskRadar
 from .health import lightweight_freshness_checks, runtime_health_checks
 from shared.market_cockpit import persist_flow_market_rows, persist_market_batch
@@ -58,6 +62,7 @@ from shared.telegram import (
     PRODUCTION_TOPIC_TEMPLATE_IDS,
     TOPIC_TEMPLATE_NAMES,
     TelegramGateway,
+    plain_fallback,
 )
 from shared.time_windows import next_closed_window_epoch
 
@@ -1291,6 +1296,31 @@ def run_consolidation_breakout(args: argparse.Namespace) -> int:
     return 1 if push_status in {"failed", "partial"} else 0
 
 
+def _consolidation_chart_photo(
+    event: Mapping[str, Any],
+    chart_payload: object,
+) -> tuple[bytes | None, str]:
+    caption = str(event.get("text") or "")
+    if len(plain_fallback(caption)) > 1024:
+        return None, "caption_too_long"
+    if not isinstance(chart_payload, Mapping):
+        return None, "payload_unavailable"
+    try:
+        photo = render_consolidation_chart_png(
+            event=event,
+            chart_payload=chart_payload,
+        )
+    except Exception:  # Presentation failure must not stop market scanning.
+        return None, "render_failed"
+    if not isinstance(photo, bytes) or not photo.startswith(
+        CONSOLIDATION_CHART_PNG_SIGNATURE
+    ):
+        return None, "invalid_png"
+    if len(photo) > 10 * 1024 * 1024:
+        return None, "photo_too_large"
+    return photo, "ready"
+
+
 def push_consolidation_breakout(
     settings: Settings,
     store: JsonStore,
@@ -1303,8 +1333,16 @@ def push_consolidation_breakout(
 
     accepted_event_ids: set[str] = set()
     push_results: list[dict[str, object]] = []
+    raw_chart_payloads = result.get("chart_payloads")
+    chart_payloads = (
+        raw_chart_payloads if isinstance(raw_chart_payloads, Mapping) else {}
+    )
     for index, event in enumerate(result.get("events") or [], start=1):
         event_id = str(event.get("event_id") or "")
+        photo, chart_status = _consolidation_chart_photo(
+            event,
+            chart_payloads.get(event_id),
+        )
         push = gateway.send(
             str(event.get("text") or ""),
             str(result.get("template_id") or "TG_CONSOLIDATION_BREAKOUT"),
@@ -1314,6 +1352,7 @@ def push_consolidation_breakout(
             cooldown_sec=7 * 86400,
             parse_mode="HTML",
             signal_records=[event],
+            photo=photo,
             enrich_market_context=False,
         )
         print(format_push_result_cn(
@@ -1326,6 +1365,7 @@ def push_consolidation_breakout(
             "event_id": event_id,
             "status": push.status,
             "reason": push.reason,
+            "chart_status": chart_status,
         })
         if push.status == "sent" or (
             push.status == "skipped" and push.reason == "dedup_cooldown"
@@ -1338,6 +1378,17 @@ def push_consolidation_breakout(
         "events": len(result.get("events") or []),
         "accepted": len(accepted_event_ids),
         "state_updates_committed": committed,
+        "charts_ready": sum(
+            item.get("chart_status") == "ready" for item in push_results
+        ),
+        "charts_delivered": sum(
+            item.get("chart_status") == "ready"
+            and item.get("status") == "sent"
+            for item in push_results
+        ),
+        "charts_text_fallback": sum(
+            item.get("chart_status") != "ready" for item in push_results
+        ),
         "pushes": push_results,
     }
     statuses = {str(item.get("status") or "") for item in push_results}
