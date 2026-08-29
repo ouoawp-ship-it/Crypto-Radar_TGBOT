@@ -352,6 +352,23 @@ class Settings:
     consolidation_breakout_state_path: Path = (
         BASE_DIR / "data" / "consolidation_breakout_state.json"
     )
+    # The adaptive daily product is isolated from the legacy 4H/1D/1W state
+    # machine.  Shipping it disabled and in shadow mode prevents an upgrade
+    # from changing Telegram traffic before an explicit production rollout.
+    consolidation_daily_product_enable: bool = False
+    consolidation_daily_shadow_mode: bool = True
+    consolidation_daily_digest_enable: bool = False
+    consolidation_daily_boundary_events_enable: bool = False
+    consolidation_daily_history_bars: int = 620
+    consolidation_daily_digest_max_items: int = 20
+    consolidation_daily_retry_rounds: int = 2
+    consolidation_daily_max_wait_sec: int = 3 * 3600
+    consolidation_daily_state_path: Path = (
+        BASE_DIR / "data" / "consolidation_daily_product_state.json"
+    )
+    consolidation_daily_digest_state_path: Path = (
+        BASE_DIR / "data" / "consolidation_daily_digest_state.json"
+    )
 
     funding_alert_enable: bool = True
     funding_alert_interval_sec: int = 180
@@ -1111,6 +1128,56 @@ class Settings:
                 "CONSOLIDATION_BREAKOUT_STATE_FILE",
                 "consolidation_breakout_state.json",
             ),
+            consolidation_daily_product_enable=reloadable_bool(
+                "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
+                False,
+            ),
+            consolidation_daily_shadow_mode=reloadable_bool(
+                "CONSOLIDATION_DAILY_SHADOW_MODE",
+                True,
+            ),
+            consolidation_daily_digest_enable=reloadable_bool(
+                "CONSOLIDATION_DAILY_DIGEST_ENABLE",
+                False,
+            ),
+            consolidation_daily_boundary_events_enable=reloadable_bool(
+                "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE",
+                False,
+            ),
+            consolidation_daily_history_bars=env_bounded_int(
+                "CONSOLIDATION_DAILY_HISTORY_BARS",
+                620,
+                620,
+                1000,
+            ),
+            consolidation_daily_digest_max_items=env_bounded_int(
+                "CONSOLIDATION_DAILY_DIGEST_MAX_ITEMS",
+                20,
+                1,
+                60,
+            ),
+            consolidation_daily_retry_rounds=env_bounded_int(
+                "CONSOLIDATION_DAILY_RETRY_ROUNDS",
+                2,
+                0,
+                5,
+            ),
+            consolidation_daily_max_wait_sec=env_bounded_int(
+                "CONSOLIDATION_DAILY_MAX_WAIT_SEC",
+                3 * 3600,
+                600,
+                6 * 3600,
+            ),
+            consolidation_daily_state_path=data_path(
+                data_dir,
+                "CONSOLIDATION_DAILY_STATE_FILE",
+                "consolidation_daily_product_state.json",
+            ),
+            consolidation_daily_digest_state_path=data_path(
+                data_dir,
+                "CONSOLIDATION_DAILY_DIGEST_STATE_FILE",
+                "consolidation_daily_digest_state.json",
+            ),
             funding_alert_enable=reloadable_bool("FUNDING_ALERT_ENABLE", True),
             funding_alert_interval_sec=env_int("FUNDING_ALERT_INTERVAL_SEC", 180),
             funding_alert_scan_limit=env_int("FUNDING_ALERT_SCAN_LIMIT", 120),
@@ -1554,6 +1621,24 @@ class Settings:
                 ),
                 "state_file": str(self.consolidation_breakout_state_path),
                 "telegram_template": "TG_CONSOLIDATION_BREAKOUT",
+                "daily_product": {
+                    "enabled": self.consolidation_daily_product_enable,
+                    "shadow_mode": self.consolidation_daily_shadow_mode,
+                    "digest_enabled": self.consolidation_daily_digest_enable,
+                    "boundary_events_enabled": (
+                        self.consolidation_daily_boundary_events_enable
+                    ),
+                    "history_bars": self.consolidation_daily_history_bars,
+                    "digest_max_items": (
+                        self.consolidation_daily_digest_max_items
+                    ),
+                    "retry_rounds": self.consolidation_daily_retry_rounds,
+                    "max_wait_sec": self.consolidation_daily_max_wait_sec,
+                    "state_file": str(self.consolidation_daily_state_path),
+                    "digest_state_file": str(
+                        self.consolidation_daily_digest_state_path
+                    ),
+                },
             },
             "funding_alert": {
                 "enable": self.funding_alert_enable,

@@ -108,22 +108,37 @@ paopao telegram-test
 
 随后在 `config/.env.oi` 设置 `CONSOLIDATION_BREAKOUT_ENABLE=true`；需要启用
 三推顶/底背离时再显式设置 `CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE=true`。
-完整扫描周期、240 日箱体、假突破和三推确认规则见
+旧版 4H/1D/1W 的 24/72/240 根箱体保持不变。新的自适应 1D 产品必须单独启用，
+首次上线只设置 `CONSOLIDATION_DAILY_PRODUCT_ENABLE=true`，同时保持
+`CONSOLIDATION_DAILY_SHADOW_MODE=true`，日报和 4H 边界事件继续关闭。至少验收一个
+完整目标日 K 的全市场覆盖后，才在影子模式中打开日报/边界开关，最后关闭影子模式。
+更新脚本会把盘整雷达精确的旧默认 `900秒 / 24个 / 500万成交额` 迁移为
+`300秒 / 40个 / 不按成交额过滤`，但会保留人工自定义值；保留自定义配置时需先确认
+完整轮转耗时没有超过日报最长等待。
+北京时间 08:00 只是日 K 收线参考点；日报要等全市场轮转覆盖完成后才生成一次，
+不是 08:00 固定发送全部箱体。箱体和三推卡片均使用可解释的质量标签与理由，
+不显示未经历史校准的 `/100` 分数。
+完整扫描周期、自适应 20–500 日箱体、假突破和三推确认规则见
 [盘整突破雷达说明](CONSOLIDATION_BREAKOUT_RADAR_CN.md)。
 
-盘整突破和三推 Telegram 信号会附带价格 K 线、成交量和 MACD 图。
-箱体图标出上下沿和事件 K 线，三推图标出 P1/P2/P3、MACD 三枢轴、颈线和
-失效位。绘图只复用已扫描的闭合 K 线，不增加行情请求；渲染或 caption
-校验失败会自动降级为原文字。这项展示升级不改变信号判断、话题路由、
-`--send --confirm-real-send` 双门禁或两个默认关闭的开关。
+盘整突破和三推 Telegram 信号会附带价格 K 线、成交量和 MACD 图。自适应日线
+结构图最多保留 620 根日 K，可完整显示最长 500 日箱体；由 4H 收线触发的日线
+边界预警仍使用 1D 结构图，并单独标出 4H 事件位置，不会把日线箱体画成短周期
+箱体。三推图标出 P1/P2/P3、MACD 三枢轴、颈线和失效位。所需闭合 K 线在受控
+扫描预算内获取；渲染或 caption 校验失败会自动降级为原文字。这项展示升级不
+改变信号判断、话题路由或 `--send --confirm-real-send` 双门禁。
 
-已有“盘整突破雷达”话题升级后，需要显式刷新本版图表说明；命令不会创建新话题：
+已有“盘整突破雷达”话题升级后，需要显式刷新 v2.5.0 说明；命令不会创建新话题：
 
 ```bash
 .venv/bin/python main.py telegram-topic-refresh \
   --topic-template TG_CONSOLIDATION_BREAKOUT \
   --send --confirm-real-send
 ```
+
+如需回滚自适应日线，先恢复 `CONSOLIDATION_DAILY_SHADOW_MODE=true`，再关闭日报和
+4H 边界事件，必要时最后关闭产品开关。不要删除日线产品或日报状态文件；旧版
+4H/1D/1W 箱体不会被这些门禁修改。
 
 ## 更新
 
@@ -136,8 +151,8 @@ bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 通过 Tag CI 的 annotated Tag，并使用独立入口：
 
 ```bash
-bash scripts/deploy_tag.sh --check-tag v2.4.2
-bash scripts/deploy_tag.sh --tag v2.4.2 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.5.0
+bash scripts/deploy_tag.sh --tag v2.5.0 --yes --refresh-pulse-topic-intro
 ```
 
 `--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会

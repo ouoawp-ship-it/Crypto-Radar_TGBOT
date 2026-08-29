@@ -9,15 +9,22 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from itertools import product
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from config import Settings
+from radars.consolidation_breakout.daily import (
+    DAILY_DETECTOR_PROFILE,
+    DAILY_HORIZONS,
+    DailyHorizonSpec,
+    select_daily_candidate,
+)
 from shared.binance_data import BinanceDataSource
 from shared.storage import JsonStore
 
 
 TEMPLATE_ID = "TG_CONSOLIDATION_BREAKOUT"
 STATE_SCHEMA_VERSION = 1
+DAILY_STATE_SCHEMA_VERSION = 1
 CST = timezone(timedelta(hours=8))
 
 ATR_PERIOD = 14
@@ -42,6 +49,8 @@ THREE_PUSH_MIN_MACD_LEG_WEAKENING = 0.05
 THREE_PUSH_RULE_VERSION = 2
 THREE_PUSH_EDGE_TOLERANCE_ATR = 0.50
 CHART_HISTORY_LIMIT = 264
+DAILY_CHART_HISTORY_LIMIT = 620
+DAY_MS = 86_400_000
 
 
 @dataclass(frozen=True)
@@ -166,6 +175,36 @@ def _timeframe_ms(timeframe: str) -> int:
     return max(0, amount) * multiplier
 
 
+def _latest_daily_close_time(cutoff_ms: int) -> int:
+    """Return Binance's latest fully closed UTC daily candle close time."""
+
+    if cutoff_ms <= DAY_MS:
+        return 0
+    return (cutoff_ms + 1) // DAY_MS * DAY_MS - 1
+
+
+def _daily_runtime_spec(spec: DailyHorizonSpec) -> HorizonSpec:
+    """Adapt a daily detector horizon to the existing event state machine."""
+
+    cooldown, maximum_age = {
+        "short": (5, 120),
+        "medium": (8, 360),
+        "long": (12, 0),
+    }.get(spec.name, (8, 0))
+    return HorizonSpec(
+        name=spec.name,
+        label=spec.label,
+        length=max(spec.anchors),
+        max_width_atr=spec.max_width_atr,
+        max_width_pct=spec.max_width_pct,
+        max_efficiency=spec.max_efficiency,
+        stability=spec.stability,
+        cooldown=cooldown,
+        maximum_age=maximum_age,
+        rank=spec.rank,
+    )
+
+
 def _cluster_count(flags: Iterable[bool]) -> int:
     """Count separated touch clusters; adjacent touch bars count only once."""
 
@@ -228,35 +267,49 @@ def _box_candidate(
     candles: list[Candle],
     current_index: int,
     spec: HorizonSpec,
+    diagnostics: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
     """Build a confirmed range from bars strictly preceding ``current_index``."""
+
+    def record(reason: str) -> None:
+        if diagnostics is not None:
+            diagnostics[reason] = max(0, int(diagnostics.get(reason) or 0)) + 1
+
+    record("evaluated")
 
     previous_end = current_index - 1
     earliest_start = previous_end - spec.length + 1 - (spec.stability - 1)
     if earliest_start < 0 or previous_end <= 0:
+        record("insufficient_history")
         return None
     main_start = previous_end - spec.length + 1
     window = candles[main_start:previous_end + 1]
     if len(window) != spec.length:
+        record("insufficient_history")
         return None
 
     atr = _atr(candles, previous_end)
     if atr <= 0:
+        record("invalid_atr")
         return None
     upper = max(candle.high for candle in window)
     lower = min(candle.low for candle in window)
     width = upper - lower
     midpoint = (upper + lower) / 2.0
     if width <= 0 or midpoint <= 0:
+        record("invalid_width")
         return None
     width_atr = width / atr
     width_pct = width / midpoint * 100.0
     efficiency = _path_efficiency(window)
-    if (
-        width_atr > spec.max_width_atr
-        or width_pct > spec.max_width_pct
-        or efficiency > spec.max_efficiency
-    ):
+    if width_atr > spec.max_width_atr:
+        record("width_atr")
+        return None
+    if width_pct > spec.max_width_pct:
+        record("width_pct")
+        return None
+    if efficiency > spec.max_efficiency:
+        record("path_efficiency")
         return None
 
     max_drift = ENDPOINT_DRIFT_ATR * atr
@@ -265,12 +318,15 @@ def _box_candidate(
         shifted_start = shifted_end - spec.length + 1
         shifted = candles[shifted_start:shifted_end + 1]
         if len(shifted) != spec.length:
+            record("insufficient_history")
             return None
         shifted_upper = max(candle.high for candle in shifted)
         shifted_lower = min(candle.low for candle in shifted)
         if abs(shifted_upper - upper) > max_drift:
+            record("endpoint_drift")
             return None
         if abs(shifted_lower - lower) > max_drift:
+            record("endpoint_drift")
             return None
 
     upper_touches, lower_touches = count_touch_clusters(
@@ -279,8 +335,13 @@ def _box_candidate(
         lower=lower,
         tolerance=TOUCH_TOLERANCE_ATR * atr,
     )
-    if upper_touches < 2 or lower_touches < 2:
+    if upper_touches < 2:
+        record("upper_touches")
         return None
+    if lower_touches < 2:
+        record("lower_touches")
+        return None
+    record("passed")
     return {
         "upper": upper,
         "lower": lower,
@@ -824,6 +885,8 @@ def _step_track(
     timeframe_ms: int,
     spec: HorizonSpec,
     strong_volume_ratio: float,
+    box_diagnostics: dict[str, int] | None = None,
+    box_candidate_builder: Callable[[], dict[str, Any] | None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     track = copy.deepcopy(original) if isinstance(original, dict) else {}
     candle = candles[current_index]
@@ -836,7 +899,16 @@ def _step_track(
         track["box"] = None
         track["breakout"] = None
         if candle.close_time >= int(track.get("cooldown_until") or 0):
-            candidate = _box_candidate(candles, current_index, spec)
+            candidate = (
+                box_candidate_builder()
+                if box_candidate_builder is not None
+                else _box_candidate(
+                    candles,
+                    current_index,
+                    spec,
+                    box_diagnostics,
+                )
+            )
             if candidate is not None:
                 track["box"] = candidate
                 box = candidate
@@ -993,11 +1065,33 @@ def _step_track(
         "close": candle.close,
         "box_upper": upper,
         "box_lower": lower,
-        "box_age": spec.length + max(0, int(box.get("active_bars") or 0)),
+        "box_age": max(1, _to_int(box.get("base_bars"), spec.length))
+        + max(0, int(box.get("active_bars") or 0)),
+        "box_base_bars": max(
+            1,
+            _to_int(box.get("base_bars"), spec.length),
+        ),
         "box_width_atr": _to_float(box.get("width_atr")),
         "box_width_pct": _to_float(box.get("width_pct")),
         "width_pct": _to_float(box.get("width_pct")),
         "box_efficiency": _to_float(box.get("efficiency")),
+        "candle_coverage_ratio": _to_float(
+            box.get("candle_coverage"),
+            1.0,
+        ),
+        "close_coverage_ratio": _to_float(
+            box.get("close_coverage"),
+            1.0,
+        ),
+        "boundary_method": str(box.get("boundary_method") or "extreme_wick_v1"),
+        "detector_profile": str(box.get("detector_profile") or "legacy_fixed.v1"),
+        "quality_label": str(box.get("quality_label") or ""),
+        "quality_label_zh": str(box.get("quality_label_zh") or ""),
+        "quality_reasons": copy.deepcopy(box.get("quality_reasons", [])),
+        "box_start_close_time": _to_int(
+            box.get("window_start_close_time")
+        ),
+        "box_formed_close_time": _to_int(box.get("formed_close_time")),
         "upper_touches": max(0, int(box.get("upper_touches") or 0)),
         "lower_touches": max(0, int(box.get("lower_touches") or 0)),
         "volume_ratio": ratio,
@@ -1052,10 +1146,16 @@ def _chart_payload(
     current_index: int,
     event: dict[str, Any],
 ) -> dict[str, Any]:
-    start_index = max(0, current_index - CHART_HISTORY_LIMIT + 1)
+    box_age = max(0, _to_int(event.get("box_age")))
+    history_limit = CHART_HISTORY_LIMIT
+    if str(event.get("detector_profile") or "") == DAILY_DETECTOR_PROFILE:
+        history_limit = min(
+            DAILY_CHART_HISTORY_LIMIT,
+            max(CHART_HISTORY_LIMIT, box_age + 20),
+        )
+    start_index = max(0, current_index - history_limit + 1)
     visible = candles[start_index:current_index + 1]
     macd = _macd_line(candles[:current_index + 1])[start_index:]
-    box_age = max(0, _to_int(event.get("box_age")))
     frozen_box_start = max(
         0,
         _to_int(event.get("box_start_close_time")),
@@ -1096,24 +1196,208 @@ def _chart_payload(
     }
 
 
-def _event_score(event: dict[str, Any], spec: HorizonSpec, strong_ratio: float) -> int:
-    width_atr = max(0.0, _to_float(event.get("box_width_atr")))
-    tightness = max(0.0, 1.0 - width_atr / max(spec.max_width_atr, 0.01))
-    touch_bonus = min(
-        10.0,
-        max(0, int(event.get("upper_touches") or 0) + int(event.get("lower_touches") or 0) - 4) * 2.0 + 4.0,
+def _range_quality(event: dict[str, Any], spec: HorizonSpec) -> dict[str, Any]:
+    """Describe range quality without presenting an uncalibrated probability score."""
+
+    upper_touches = max(0, _to_int(event.get("upper_touches")))
+    lower_touches = max(0, _to_int(event.get("lower_touches")))
+    efficiency = max(0.0, _to_float(event.get("box_efficiency")))
+    close_coverage = max(
+        0.0,
+        min(1.0, _to_float(event.get("close_coverage_ratio"), 1.0)),
     )
-    ratio = max(0.0, _to_float(event.get("volume_ratio")))
-    volume_bonus = min(20.0, ratio / max(strong_ratio, 0.01) * 10.0)
-    kind_bonus = {
-        "fake_breakout": 12,
-        "fake_breakdown": 12,
-        "strong_breakout_up": 10,
-        "strong_breakout_down": 10,
-        "retest_up": 7,
-        "retest_down": 7,
-    }.get(str(event.get("event") or ""), 0)
-    return min(100, max(1, round(45 + tightness * 15 + touch_bonus + volume_bonus + kind_bonus)))
+    strong = (
+        upper_touches >= 3
+        and lower_touches >= 3
+        and efficiency <= max(0.01, spec.max_efficiency * 0.70)
+        and close_coverage >= 0.95
+    )
+    return {
+        "structure_quality": "strong" if strong else "normal",
+        "structure_quality_label": "强" if strong else "标准",
+        "quality_rank": 2 if strong else 1,
+        "quality_reasons": [
+            f"上下沿触碰 {upper_touches}/{lower_touches}",
+            f"路径效率 {efficiency:.2f}",
+            f"收盘覆盖 {close_coverage * 100:.0f}%",
+        ],
+    }
+
+
+def _daily_quality_reasons(box: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    for raw in box.get("quality_reasons", []):
+        if isinstance(raw, str):
+            text = raw.strip()
+        elif isinstance(raw, dict):
+            factor = str(raw.get("factor") or "")
+            if factor == "candle_coverage":
+                text = f"完整K线覆盖 {_to_float(raw.get('value')) * 100:.0f}%"
+            elif factor == "close_coverage":
+                text = f"收盘覆盖 {_to_float(raw.get('value')) * 100:.0f}%"
+            elif factor == "touch_clusters":
+                text = (
+                    f"上下沿触碰 {_to_int(raw.get('upper'))}/"
+                    f"{_to_int(raw.get('lower'))}"
+                )
+            elif factor == "path_efficiency":
+                text = f"路径效率 {_to_float(raw.get('value')):.2f}"
+            elif factor == "box_width":
+                text = (
+                    f"箱宽 {_to_float(raw.get('pct')):.2f}% / "
+                    f"{_to_float(raw.get('atr')):.2f} ATR"
+                )
+            else:
+                text = ""
+        else:
+            text = ""
+        if text and text not in reasons:
+            reasons.append(text)
+    return reasons[:5]
+
+
+def _daily_event_quality(box: dict[str, Any]) -> dict[str, Any]:
+    quality = str(box.get("quality_label") or "watch").strip().lower()
+    if quality not in {"strong", "standard", "watch"}:
+        quality = "watch"
+    return {
+        "structure_quality": quality,
+        "structure_quality_label": {
+            "strong": "强",
+            "standard": "标准",
+            "watch": "观察",
+        }[quality],
+        "quality_rank": {"strong": 2, "standard": 1, "watch": 0}[quality],
+        "quality_reasons": _daily_quality_reasons(box),
+    }
+
+
+def _daily_gate_failures(
+    diagnostics: dict[str, dict[str, Any]],
+) -> list[str]:
+    failures: list[str] = []
+    for spec in DAILY_HORIZONS:
+        detail = diagnostics.get(spec.name, {})
+        if str(detail.get("status") or "") == "accepted":
+            continue
+        reason_counts = detail.get("reason_counts")
+        if not isinstance(reason_counts, dict) or not reason_counts:
+            continue
+        reason = max(
+            reason_counts,
+            key=lambda name: (_to_int(reason_counts.get(name)), str(name)),
+        )
+        text = f"{spec.label}:{reason}"
+        if text not in failures:
+            failures.append(text)
+    return failures[:8]
+
+
+def _merge_daily_detector_diagnostics(
+    summary: dict[str, dict[str, Any]],
+    failure_samples: list[dict[str, Any]],
+    *,
+    symbol: str,
+    diagnostics: dict[str, dict[str, Any]],
+) -> None:
+    for spec in DAILY_HORIZONS:
+        detail = diagnostics.get(spec.name, {})
+        if not isinstance(detail, dict) or not detail:
+            continue
+        bucket = summary.setdefault(spec.name, {
+            "evaluated_symbols": 0,
+            "accepted_count": 0,
+            "status_counts": {},
+            "selected_length_counts": {},
+            "reason_counts": {},
+        })
+        bucket["evaluated_symbols"] += 1
+        status = str(detail.get("status") or "unknown")
+        status_counts = bucket["status_counts"]
+        status_counts[status] = _to_int(status_counts.get(status)) + 1
+        if status == "accepted":
+            bucket["accepted_count"] += 1
+        selected_length = _to_int(detail.get("selected_length"))
+        if selected_length > 0:
+            length_counts = bucket["selected_length_counts"]
+            key = str(selected_length)
+            length_counts[key] = _to_int(length_counts.get(key)) + 1
+        raw_reasons = detail.get("reason_counts")
+        reason_counts = raw_reasons if isinstance(raw_reasons, dict) else {}
+        for reason, count in reason_counts.items():
+            key = str(reason)
+            bucket["reason_counts"][key] = (
+                _to_int(bucket["reason_counts"].get(key))
+                + max(0, _to_int(count))
+            )
+        if status != "accepted" and len(failure_samples) < 5:
+            top_reasons = sorted(
+                reason_counts,
+                key=lambda reason: (
+                    -_to_int(reason_counts.get(reason)),
+                    str(reason),
+                ),
+            )[:3]
+            failure_samples.append({
+                "symbol": symbol,
+                "horizon": spec.name,
+                "status": status,
+                "reasons": [str(reason) for reason in top_reasons],
+            })
+
+
+def _daily_structure_snapshot(
+    track: dict[str, Any],
+    *,
+    symbol: str,
+    spec: DailyHorizonSpec,
+    current: Candle,
+) -> dict[str, Any] | None:
+    box = track.get("box")
+    if not isinstance(box, dict):
+        return None
+    upper = _to_float(box.get("upper"))
+    lower = _to_float(box.get("lower"))
+    atr = _to_float(box.get("atr"))
+    if upper <= lower or lower <= 0 or atr <= 0:
+        return None
+    base_bars = max(1, _to_int(box.get("base_bars"), min(spec.anchors)))
+    active_bars = max(0, _to_int(box.get("active_bars")))
+    detected_close_time = _to_int(box.get("detected_close_time"))
+    breakout = track.get("breakout")
+    lifecycle = (
+        "breakout_watch"
+        if isinstance(breakout, dict)
+        else "new"
+        if detected_close_time == current.close_time
+        else "continuing"
+    )
+    quality = _daily_event_quality(box)
+    return {
+        "box_id": (
+            f"{DAILY_DETECTOR_PROFILE}:{symbol}:{spec.name}:"
+            f"{_to_int(box.get('formed_close_time'))}:"
+            f"{lower:.12g}:{upper:.12g}"
+        ),
+        "horizon": spec.name,
+        "horizon_label": spec.label,
+        "base_bars": base_bars,
+        "box_age": base_bars + active_bars,
+        "formed_close_time": _to_int(box.get("formed_close_time")),
+        "box_upper": upper,
+        "box_lower": lower,
+        "width_pct": _to_float(box.get("width_pct")),
+        "width_atr": _to_float(box.get("width_atr")),
+        "upper_touches": max(0, _to_int(box.get("upper_touches"))),
+        "lower_touches": max(0, _to_int(box.get("lower_touches"))),
+        "efficiency": max(0.0, _to_float(box.get("efficiency"))),
+        "current_close": current.close,
+        "distance_upper_atr": (upper - current.close) / atr,
+        "distance_lower_atr": (current.close - lower) / atr,
+        "structure_quality": quality["structure_quality"],
+        "quality_reasons": quality["quality_reasons"],
+        "lifecycle_state": lifecycle,
+    }
 
 
 def _three_push_quality(event: dict[str, Any]) -> dict[str, Any]:
@@ -1260,6 +1544,14 @@ def _format_three_push_event(event: dict[str, Any]) -> str:
     icon, label = EVENT_LABELS[event_name]
     symbol = escape(str(event.get("symbol") or ""), quote=False)
     timeframe = escape(str(event.get("timeframe") or "").upper(), quote=False)
+    structure_timeframe = escape(
+        str(event.get("structure_timeframe") or timeframe).upper(),
+        quote=False,
+    )
+    trigger_timeframe = escape(
+        str(event.get("trigger_timeframe") or timeframe).upper(),
+        quote=False,
+    )
     close_time = int(event.get("close_time") or 0)
     when = datetime.fromtimestamp(close_time / 1000, CST).strftime("%m-%d %H:%M CST")
     third_time = int(event.get("third_pivot_close_time") or 0)
@@ -1311,7 +1603,10 @@ def _format_three_push_event(event: dict[str, Any]) -> str:
     )
     lines = [
         f"{icon} <b>盘整突破雷达 · {escape(label, quote=False)}</b>",
-        f"<b>{symbol}</b> ｜ 周期 {timeframe} ｜ 三推结构",
+        (
+            f"<b>{symbol}</b> ｜ 结构周期 {structure_timeframe} ｜ "
+            f"触发周期 {trigger_timeframe}"
+        ),
         f"⏰ {when}（第三推 {third_when}）",
         "",
         (
@@ -1376,12 +1671,24 @@ def _format_event(event: dict[str, Any]) -> str:
     icon, label = EVENT_LABELS[event_name]
     symbol = escape(str(event.get("symbol") or ""), quote=False)
     timeframe = escape(str(event.get("timeframe") or "").upper(), quote=False)
+    structure_timeframe = escape(
+        str(event.get("structure_timeframe") or timeframe).upper(),
+        quote=False,
+    )
+    trigger_timeframe = escape(
+        str(event.get("trigger_timeframe") or timeframe).upper(),
+        quote=False,
+    )
     horizon = escape(str(event.get("horizon_label") or ""), quote=False)
     close_time = int(event.get("close_time") or 0)
     when = datetime.fromtimestamp(close_time / 1000, CST).strftime("%m-%d %H:%M CST")
     return "\n".join([
         f"{icon} <b>盘整突破雷达 · {escape(label, quote=False)}</b>",
-        f"<b>{symbol}</b> ｜ 周期 {timeframe} ｜ {horizon}箱体（{int(event.get('box_age') or 0)}根）",
+        (
+            f"<b>{symbol}</b> ｜ 结构周期 {structure_timeframe} ｜ "
+            f"触发周期 {trigger_timeframe}"
+        ),
+        f"{horizon}箱体｜{int(event.get('box_age') or 0)}根",
         f"⏰ {when}",
         "",
         f"收盘｜<b>{_price(_to_float(event.get('close')))}</b>",
@@ -1395,8 +1702,18 @@ def _format_event(event: dict[str, Any]) -> str:
             f"下沿 {int(event.get('lower_touches') or 0)}（已去抖）"
         ),
         (
-            f"量比｜{_to_float(event.get('volume_ratio')):.2f}x ｜ "
-            f"评分 <b>{int(event.get('score') or 0)}/100</b>"
+            "结构质量｜<b>"
+            f"{escape(str(event.get('structure_quality_label') or '标准'), quote=False)}"
+            "</b>"
+        ),
+        f"量能｜{_to_float(event.get('volume_ratio')):.2f}x",
+        (
+            "结构依据｜"
+            + "；".join(
+                escape(str(reason), quote=False)
+                for reason in event.get("quality_reasons", [])
+                if str(reason)
+            )
         ),
         "",
         f"🧭 观察：{escape(_observation_text(event_name), quote=False)}",
@@ -1419,12 +1736,23 @@ class ConsolidationBreakoutRadar:
         )
         return Path(value)
 
+    @property
+    def daily_state_path(self) -> Path:
+        value = getattr(
+            self.settings,
+            "consolidation_daily_state_path",
+            self.settings.data_dir / "consolidation_daily_product_state.json",
+        )
+        return Path(value)
+
     def _empty_result(self, reason: str) -> dict[str, Any]:
         return {
             "template_id": TEMPLATE_ID,
             "events": [],
             "chart_payloads": {},
             "state_updates": [],
+            "daily_state_updates": [],
+            "daily_digest_batch": None,
             "diagnostics": {
                 "status": reason,
                 "candidate_count": 0,
@@ -1458,6 +1786,25 @@ class ConsolidationBreakoutRadar:
                 "after_symbol": after_symbol,
                 "round": round_number,
             },
+        }
+
+    def _load_daily_state(self) -> dict[str, Any]:
+        raw = self.store.load(self.daily_state_path, {})
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != DAILY_STATE_SCHEMA_VERSION
+            or raw.get("detector_profile") != DAILY_DETECTOR_PROFILE
+        ):
+            return {
+                "schema_version": DAILY_STATE_SCHEMA_VERSION,
+                "detector_profile": DAILY_DETECTOR_PROFILE,
+                "tracks": {},
+            }
+        tracks = raw.get("tracks")
+        return {
+            "schema_version": DAILY_STATE_SCHEMA_VERSION,
+            "detector_profile": DAILY_DETECTOR_PROFILE,
+            "tracks": tracks if isinstance(tracks, dict) else {},
         }
 
     def _universe(self, source: BinanceDataSource) -> list[str]:
@@ -1544,6 +1891,714 @@ class ConsolidationBreakoutRadar:
         }
         return batch, next_rotation, diagnostics
 
+    @staticmethod
+    def _cached_daily_observation(
+        *,
+        symbol: str,
+        target_close_time: int,
+        legacy_tracks: dict[str, Any],
+        daily_tracks: dict[str, Any],
+        legacy_timeframe_enabled: bool,
+        three_push_enabled: bool,
+    ) -> dict[str, Any] | None:
+        required: list[tuple[dict[str, Any], str]] = [
+            (daily_tracks, f"{symbol}|1d|{spec.name}")
+            for spec in DAILY_HORIZONS
+        ]
+        if legacy_timeframe_enabled:
+            required.extend(
+                (legacy_tracks, f"{symbol}|1d|{spec.name}")
+                for spec in HORIZONS
+            )
+            if three_push_enabled:
+                required.append((legacy_tracks, f"{symbol}|1d|three_push"))
+        for source, key in required:
+            track = source.get(key, {}) if isinstance(source, dict) else {}
+            if (
+                not isinstance(track, dict)
+                or _to_int(track.get("last_close_time")) < target_close_time
+            ):
+                return None
+        cache = daily_tracks.get(f"{symbol}|1d|observation", {})
+        if not isinstance(cache, dict):
+            return None
+        observation = cache.get("observation")
+        if (
+            not isinstance(observation, dict)
+            or _to_int(observation.get("target_close_time"))
+            != target_close_time
+        ):
+            return None
+        return copy.deepcopy(observation)
+
+    def _build_daily_pair(
+        self,
+        *,
+        symbol: str,
+        candles: list[Candle],
+        tracks: dict[str, Any],
+        strong_ratio: float,
+        require_strong: bool,
+        emit_events: bool,
+    ) -> dict[str, Any]:
+        working: dict[str, dict[str, Any]] = {}
+        pending_indices: set[int] = set()
+        required_by_key: dict[str, list[str]] = {}
+        updates: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+        chart_contexts: dict[str, tuple[list[Candle], int]] = {}
+        detector_diagnostics: dict[str, dict[str, Any]] = {}
+        suppressed = 0
+        non_emitted_events = 0
+
+        for daily_spec in DAILY_HORIZONS:
+            key = f"{symbol}|1d|{daily_spec.name}"
+            existing = tracks.get(key, {}) if isinstance(tracks, dict) else {}
+            track = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+            working[daily_spec.name] = track
+            last_close = _to_int(track.get("last_close_time"))
+            if last_close > 0:
+                pending_indices.update(
+                    index
+                    for index, candle in enumerate(candles)
+                    if candle.close_time > last_close
+                )
+            else:
+                pending_indices.add(len(candles) - 1)
+
+        for index in sorted(pending_indices):
+            candidates_on_bar: list[tuple[DailyHorizonSpec, dict[str, Any]]] = []
+            processed: list[tuple[DailyHorizonSpec, str]] = []
+            for daily_spec in DAILY_HORIZONS:
+                track = working[daily_spec.name]
+                if candles[index].close_time <= _to_int(track.get("last_close_time")):
+                    continue
+                key = f"{symbol}|1d|{daily_spec.name}"
+                runtime_spec = _daily_runtime_spec(daily_spec)
+
+                def build_candidate(
+                    selected_spec: DailyHorizonSpec = daily_spec,
+                ) -> dict[str, Any] | None:
+                    candidate, detail = select_daily_candidate(
+                        candles,
+                        selected_spec,
+                        end_index=index,
+                    )
+                    detector_diagnostics[selected_spec.name] = detail
+                    if candidate is None:
+                        return None
+                    candidate = copy.deepcopy(candidate)
+                    candidate.update({
+                        "detected_close_time": candles[index].close_time,
+                        "upper_sweep_sent": False,
+                        "lower_sweep_sent": False,
+                    })
+                    return candidate
+
+                updated, raw_event = _step_track(
+                    track,
+                    candles,
+                    index,
+                    DAY_MS,
+                    runtime_spec,
+                    strong_ratio,
+                    box_candidate_builder=build_candidate,
+                )
+                working[daily_spec.name] = updated
+                processed.append((daily_spec, key))
+                if raw_event is None:
+                    continue
+                raw_event.update({
+                    "schema": "range_breakout.v1",
+                    "detector_profile": DAILY_DETECTOR_PROFILE,
+                    "symbol": symbol,
+                    "timeframe": "1d",
+                    "structure_timeframe": "1d",
+                    "trigger_timeframe": "1d",
+                    "trigger_kind": "daily_close",
+                    "horizon": daily_spec.name,
+                    "horizon_label": daily_spec.label,
+                    "horizon_length": _to_int(
+                        raw_event.get("box_base_bars"),
+                        min(daily_spec.anchors),
+                    ),
+                    "event_time": raw_event["close_time"],
+                })
+                event_id = (
+                    f"range_breakout.v1:{symbol}:1d:{daily_spec.name}:"
+                    f"{raw_event['event']}:{raw_event['close_time']}"
+                )
+                raw_event["event_id"] = event_id
+                raw_event["dedup_key"] = event_id
+                raw_event.update(_daily_event_quality(raw_event))
+                if not (
+                    require_strong
+                    and raw_event["event"] in {"breakout_up", "breakout_down"}
+                ):
+                    candidates_on_bar.append((daily_spec, raw_event))
+
+            if candidates_on_bar:
+                winner_spec, winner = max(
+                    candidates_on_bar,
+                    key=lambda item: (
+                        EVENT_PRIORITY.get(str(item[1].get("event") or ""), 0),
+                        item[0].rank,
+                    ),
+                )
+                winner["priority"] = EVENT_PRIORITY[str(winner["event"])]
+                winner["text"] = _format_event(winner)
+                if emit_events:
+                    events.append(winner)
+                    event_id = str(winner["event_id"])
+                    required_by_key.setdefault(
+                        f"{symbol}|1d|{winner_spec.name}",
+                        [],
+                    ).append(event_id)
+                    chart_contexts[event_id] = (candles, index)
+                else:
+                    non_emitted_events += 1
+                suppressed += max(0, len(candidates_on_bar) - 1)
+            else:
+                suppressed += 0
+
+            for daily_spec, key in processed:
+                updates.append({
+                    "key": key,
+                    "state": copy.deepcopy(working[daily_spec.name]),
+                    "required_event_ids": list(required_by_key.get(key, [])),
+                })
+
+        structures = [
+            structure
+            for daily_spec in DAILY_HORIZONS
+            if (
+                structure := _daily_structure_snapshot(
+                    working[daily_spec.name],
+                    symbol=symbol,
+                    spec=daily_spec,
+                    current=candles[-1],
+                )
+            ) is not None
+        ]
+        observation = {
+            "symbol": symbol,
+            "target_close_time": candles[-1].close_time,
+            "status": "success",
+            "structures": structures,
+            "gate_failures": _daily_gate_failures(detector_diagnostics),
+        }
+        updates.append({
+            "key": f"{symbol}|1d|observation",
+            "state": {
+                "last_close_time": candles[-1].close_time,
+                "observation": copy.deepcopy(observation),
+            },
+            "required_event_ids": [],
+        })
+        return {
+            "events": events,
+            "chart_contexts": chart_contexts,
+            "state_updates": updates,
+            "observation": observation,
+            "detector_diagnostics": detector_diagnostics,
+            "non_emitted_event_count": non_emitted_events,
+            "suppressed_horizon_events": suppressed,
+        }
+
+    def _build_daily_boundary_pair(
+        self,
+        *,
+        symbol: str,
+        candles: list[Candle],
+        daily_tracks: dict[str, Any],
+        strong_ratio: float,
+        require_strong: bool,
+        emit_events: bool,
+    ) -> dict[str, Any]:
+        trigger_timeframe = "4h"
+        trigger_ms = _timeframe_ms(trigger_timeframe)
+        working: dict[str, dict[str, Any]] = {}
+        source_boxes: dict[str, dict[str, Any]] = {}
+        retiring_monitors: dict[str, dict[str, Any]] = {}
+        pending_indices: set[int] = set()
+        blocked_monitor_keys: set[str] = set()
+        required_by_key: dict[str, list[str]] = {}
+        updates: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+        chart_contexts: dict[str, tuple[list[Candle], int]] = {}
+        non_emitted_events = 0
+        suppressed = 0
+        transitions: dict[
+            str,
+            tuple[str, dict[str, Any], dict[str, Any]],
+        ] = {}
+
+        pending_replays: list[
+            tuple[int, str, dict[str, Any], dict[str, Any]]
+        ] = []
+        for daily_spec in DAILY_HORIZONS:
+            monitor_key = (
+                f"{symbol}|1d|{daily_spec.name}|monitor_{trigger_timeframe}"
+            )
+            existing = daily_tracks.get(monitor_key, {})
+            if not isinstance(existing, dict):
+                continue
+            pending_event = existing.get("pending_event")
+            pending_next_state = existing.get("pending_next_state")
+            if isinstance(pending_event, dict) and isinstance(
+                pending_next_state,
+                dict,
+            ):
+                pending_replays.append((
+                    _to_int(pending_event.get("close_time")),
+                    monitor_key,
+                    copy.deepcopy(pending_event),
+                    copy.deepcopy(pending_next_state),
+                ))
+        if pending_replays:
+            _close_time, monitor_key, pending_event, next_state = min(
+                pending_replays,
+                key=lambda item: (item[0], item[1]),
+            )
+            if not emit_events:
+                return {
+                    "events": [],
+                    "chart_contexts": {},
+                    "state_updates": [],
+                    "non_emitted_event_count": 1,
+                    "suppressed_horizon_events": 0,
+                    "active_monitor_count": len(pending_replays),
+                }
+            event_id = str(pending_event.get("event_id") or "")
+            next_state.pop("pending_event", None)
+            next_state.pop("pending_next_state", None)
+            matching_index = next(
+                (
+                    index
+                    for index, candle in enumerate(candles)
+                    if candle.close_time == _to_int(
+                        pending_event.get("close_time")
+                    )
+                ),
+                -1,
+            )
+            if event_id and matching_index >= 0:
+                chart_contexts[event_id] = (candles, matching_index)
+            return {
+                "events": [pending_event] if event_id else [],
+                "chart_contexts": chart_contexts,
+                "state_updates": [{
+                    "key": monitor_key,
+                    "state": next_state,
+                    "required_event_ids": [event_id] if event_id else [],
+                }],
+                "non_emitted_event_count": 0,
+                "suppressed_horizon_events": 0,
+                "active_monitor_count": len(pending_replays),
+            }
+
+        for daily_spec in DAILY_HORIZONS:
+            source_key = f"{symbol}|1d|{daily_spec.name}"
+            source_track = daily_tracks.get(source_key, {})
+            source_close_time = _to_int(
+                source_track.get("last_close_time")
+                if isinstance(source_track, dict)
+                else 0
+            )
+            source_box = (
+                source_track.get("box")
+                if isinstance(source_track, dict)
+                else None
+            )
+            monitor_key = (
+                f"{symbol}|1d|{daily_spec.name}|monitor_{trigger_timeframe}"
+            )
+            existing = daily_tracks.get(monitor_key, {})
+            monitor = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+            stored_retirement = monitor.get("retirement")
+            stored_retirement = (
+                copy.deepcopy(stored_retirement)
+                if isinstance(stored_retirement, dict)
+                else None
+            )
+            if (
+                isinstance(stored_retirement, dict)
+                and _to_int(stored_retirement.get("cutoff_close_time")) > 0
+                and _to_int(monitor.get("last_close_time"))
+                >= _to_int(stored_retirement.get("cutoff_close_time"))
+            ):
+                replacement_box = stored_retirement.get("replacement_box")
+                monitor = {
+                    "box": (
+                        copy.deepcopy(replacement_box)
+                        if isinstance(replacement_box, dict)
+                        else None
+                    ),
+                    "breakout": None,
+                    "cooldown_until": 0,
+                    "source_box_id": str(
+                        stored_retirement.get("replacement_source_id") or ""
+                    ),
+                    "last_close_time": _to_int(
+                        stored_retirement.get("cutoff_close_time")
+                    ),
+                    "structure_active_bars": max(
+                        0,
+                        _to_int(
+                            replacement_box.get("active_bars")
+                            if isinstance(replacement_box, dict)
+                            else 0
+                        ),
+                    ),
+                }
+                stored_retirement = None
+            source_upper = (
+                _to_float(source_box.get("upper"))
+                if isinstance(source_box, dict)
+                else 0.0
+            )
+            source_lower = (
+                _to_float(source_box.get("lower"))
+                if isinstance(source_box, dict)
+                else 0.0
+            )
+            source_valid = (
+                isinstance(source_box, dict)
+                and source_upper > source_lower > 0
+            )
+            source_box_id = (
+                f"{_to_int(source_box.get('formed_close_time'))}:"
+                f"{source_lower:.12g}:{source_upper:.12g}"
+                if source_valid
+                else ""
+            )
+            existing_box = monitor.get("box")
+            existing_upper = (
+                _to_float(existing_box.get("upper"))
+                if isinstance(existing_box, dict)
+                else 0.0
+            )
+            existing_lower = (
+                _to_float(existing_box.get("lower"))
+                if isinstance(existing_box, dict)
+                else 0.0
+            )
+            existing_valid = (
+                isinstance(existing_box, dict)
+                and existing_upper > existing_lower > 0
+            )
+            if existing_valid:
+                monitor.setdefault(
+                    "structure_active_bars",
+                    max(0, _to_int(existing_box.get("active_bars"))),
+                )
+            existing_source_id = str(monitor.get("source_box_id") or "")
+            last_close = _to_int(monitor.get("last_close_time"))
+            source_changed = (
+                not source_valid or existing_source_id != source_box_id
+            )
+
+            # A daily close may replace or retire a frozen 1D box while older
+            # closed 4H candles are still waiting behind one in-flight event.
+            # Drain only through that daily transition close before switching
+            # source boxes, so no historical event is lost or evaluated after
+            # the old structure ceased to exist.
+            active_retirement = (
+                stored_retirement
+                if isinstance(stored_retirement, dict)
+                and _to_int(stored_retirement.get("cutoff_close_time"))
+                > last_close
+                else None
+            )
+            retirement_created = False
+            if active_retirement is None and (
+                source_changed
+                and existing_valid
+                and source_close_time > last_close
+            ):
+                active_retirement = {
+                    "cutoff_close_time": source_close_time,
+                    "replacement_box": (
+                        copy.deepcopy(source_box) if source_valid else None
+                    ),
+                    "replacement_source_id": source_box_id,
+                }
+                retirement_created = True
+            if existing_valid and isinstance(active_retirement, dict):
+                cutoff_close_time = _to_int(
+                    active_retirement.get("cutoff_close_time")
+                )
+                monitor["retirement"] = copy.deepcopy(active_retirement)
+                if retirement_created:
+                    # Persist the frozen transition even when the 4H source
+                    # is temporarily behind and supplies no eligible candle.
+                    # A later 1D transition must not widen this cutoff or
+                    # replace the originally scheduled successor box.
+                    updates.append({
+                        "key": monitor_key,
+                        "state": copy.deepcopy(monitor),
+                        "required_event_ids": [],
+                    })
+                working[daily_spec.name] = monitor
+                source_boxes[daily_spec.name] = copy.deepcopy(existing_box)
+                retiring_monitors[daily_spec.name] = copy.deepcopy(
+                    active_retirement
+                )
+                pending_indices.update(
+                    index
+                    for index, candle in enumerate(candles)
+                    if last_close < candle.close_time <= cutoff_close_time
+                )
+                continue
+
+            if not source_valid:
+                if monitor:
+                    updates.append({
+                        "key": monitor_key,
+                        "state": {
+                            "box": None,
+                            "breakout": None,
+                            "cooldown_until": 0,
+                            "source_box_id": "",
+                            "last_close_time": max(
+                                last_close,
+                                source_close_time,
+                            ),
+                        },
+                        "required_event_ids": [],
+                    })
+                working[daily_spec.name] = {}
+                continue
+
+            if not existing_valid or existing_source_id != source_box_id:
+                monitor = {
+                    "box": copy.deepcopy(source_box),
+                    "breakout": None,
+                    "cooldown_until": 0,
+                    "source_box_id": source_box_id,
+                    "last_close_time": (
+                        source_close_time
+                        if source_close_time > 0
+                        else candles[-2].close_time
+                        if len(candles) > 1
+                        else 0
+                    ),
+                    "structure_active_bars": max(
+                        0,
+                        _to_int(source_box.get("active_bars")),
+                    ),
+                }
+            else:
+                monitor.pop("retirement", None)
+            working[daily_spec.name] = monitor
+            source_boxes[daily_spec.name] = copy.deepcopy(source_box)
+            last_close = _to_int(monitor.get("last_close_time"))
+            pending_indices.update(
+                index
+                for index, candle in enumerate(candles)
+                if candle.close_time > last_close
+            )
+
+        for index in sorted(pending_indices):
+            candidates_on_bar: list[tuple[DailyHorizonSpec, dict[str, Any]]] = []
+            processed: list[tuple[DailyHorizonSpec, str]] = []
+            for daily_spec in DAILY_HORIZONS:
+                source_box = source_boxes.get(daily_spec.name)
+                if not isinstance(source_box, dict):
+                    continue
+                monitor = working[daily_spec.name]
+                if candles[index].close_time <= _to_int(
+                    monitor.get("last_close_time")
+                ):
+                    continue
+                monitor_key = (
+                    f"{symbol}|1d|{daily_spec.name}|monitor_{trigger_timeframe}"
+                )
+                if monitor_key in blocked_monitor_keys:
+                    continue
+                retire = retiring_monitors.get(daily_spec.name)
+                if (
+                    isinstance(retire, dict)
+                    and candles[index].close_time
+                    > _to_int(retire.get("cutoff_close_time"))
+                ):
+                    continue
+                base_spec = _daily_runtime_spec(daily_spec)
+                monitor_spec = HorizonSpec(
+                    name=base_spec.name,
+                    label=base_spec.label,
+                    length=base_spec.length,
+                    max_width_atr=base_spec.max_width_atr,
+                    max_width_pct=base_spec.max_width_pct,
+                    max_efficiency=base_spec.max_efficiency,
+                    stability=base_spec.stability,
+                    cooldown=base_spec.cooldown,
+                    maximum_age=0,
+                    rank=base_spec.rank,
+                )
+                monitor_before = copy.deepcopy(monitor)
+                structure_active_bars = max(
+                    0,
+                    _to_int(
+                        monitor.get("structure_active_bars"),
+                        _to_int(source_box.get("active_bars")),
+                    ),
+                )
+                updated, raw_event = _step_track(
+                    monitor,
+                    candles,
+                    index,
+                    trigger_ms,
+                    monitor_spec,
+                    strong_ratio,
+                    box_candidate_builder=lambda: None,
+                )
+                updated["source_box_id"] = monitor.get("source_box_id", "")
+                updated["structure_active_bars"] = structure_active_bars
+                working[daily_spec.name] = updated
+                processed.append((daily_spec, monitor_key))
+                if raw_event is None:
+                    continue
+
+                base_bars = max(
+                    1,
+                    _to_int(source_box.get("base_bars"), min(daily_spec.anchors)),
+                )
+                raw_event.update({
+                    "schema": "range_breakout.v2",
+                    "detector_profile": DAILY_DETECTOR_PROFILE,
+                    "symbol": symbol,
+                    "timeframe": trigger_timeframe,
+                    "structure_timeframe": "1d",
+                    "trigger_timeframe": trigger_timeframe,
+                    "trigger_kind": "intraday_closed_candle",
+                    "horizon": daily_spec.name,
+                    "horizon_label": daily_spec.label,
+                    "horizon_length": base_bars,
+                    "box_base_bars": base_bars,
+                    "box_age": base_bars + structure_active_bars,
+                    "box_start_close_time": _to_int(
+                        source_box.get("window_start_close_time")
+                    ),
+                    "event_time": raw_event["close_time"],
+                })
+                event_id = (
+                    f"range_breakout.v2:{symbol}:1d:{trigger_timeframe}:"
+                    f"{daily_spec.name}:{raw_event['event']}:"
+                    f"{raw_event['close_time']}"
+                )
+                raw_event["event_id"] = event_id
+                raw_event["dedup_key"] = event_id
+                raw_event.update(_daily_event_quality(source_box))
+                transitions[event_id] = (
+                    monitor_key,
+                    monitor_before,
+                    copy.deepcopy(updated),
+                )
+                if not (
+                    require_strong
+                    and raw_event["event"] in {"breakout_up", "breakout_down"}
+                ):
+                    candidates_on_bar.append((daily_spec, raw_event))
+
+            if candidates_on_bar:
+                winner_spec, winner = max(
+                    candidates_on_bar,
+                    key=lambda item: (
+                        EVENT_PRIORITY.get(str(item[1].get("event") or ""), 0),
+                        item[0].rank,
+                    ),
+                )
+                winner["priority"] = EVENT_PRIORITY[str(winner["event"])]
+                winner["text"] = _format_event(winner)
+                if emit_events:
+                    events.append(winner)
+                    event_id = str(winner["event_id"])
+                    monitor_key, before_state, next_state = transitions[event_id]
+                    # Keep at most one in-flight event per monitor.  A later
+                    # closed candle is processed only after this event has
+                    # been accepted, so partial delivery cannot strand a
+                    # second event behind an already committed first one.
+                    blocked_monitor_keys.add(monitor_key)
+                    if not required_by_key.get(monitor_key):
+                        checkpoint = copy.deepcopy(before_state)
+                        checkpoint["pending_event"] = copy.deepcopy(winner)
+                        checkpoint["pending_next_state"] = copy.deepcopy(
+                            next_state
+                        )
+                        updates.append({
+                            "key": monitor_key,
+                            "state": checkpoint,
+                            "required_event_ids": [],
+                        })
+                    required_by_key.setdefault(monitor_key, []).append(event_id)
+                    chart_contexts[event_id] = (candles, index)
+                else:
+                    non_emitted_events += 1
+                suppressed += max(0, len(candidates_on_bar) - 1)
+
+            for daily_spec, monitor_key in processed:
+                updates.append({
+                    "key": monitor_key,
+                    "state": copy.deepcopy(working[daily_spec.name]),
+                    "required_event_ids": list(
+                        required_by_key.get(monitor_key, [])
+                    ),
+                })
+
+        for daily_spec in DAILY_HORIZONS:
+            retirement = retiring_monitors.get(daily_spec.name)
+            if not isinstance(retirement, dict):
+                continue
+            monitor_key = (
+                f"{symbol}|1d|{daily_spec.name}|monitor_{trigger_timeframe}"
+            )
+            if monitor_key in blocked_monitor_keys:
+                continue
+            cutoff_close_time = _to_int(
+                retirement.get("cutoff_close_time")
+            )
+            monitor = working.get(daily_spec.name, {})
+            if _to_int(monitor.get("last_close_time")) < cutoff_close_time:
+                continue
+            replacement_box = retirement.get("replacement_box")
+            replacement_source_id = str(
+                retirement.get("replacement_source_id") or ""
+            )
+            replacement_state = {
+                "box": (
+                    copy.deepcopy(replacement_box)
+                    if isinstance(replacement_box, dict)
+                    else None
+                ),
+                "breakout": None,
+                "cooldown_until": 0,
+                "source_box_id": replacement_source_id,
+                "last_close_time": cutoff_close_time,
+                "structure_active_bars": max(
+                    0,
+                    _to_int(
+                        replacement_box.get("active_bars")
+                        if isinstance(replacement_box, dict)
+                        else 0
+                    ),
+                ),
+            }
+            updates.append({
+                "key": monitor_key,
+                "state": replacement_state,
+                "required_event_ids": [],
+            })
+
+        return {
+            "events": events,
+            "chart_contexts": chart_contexts,
+            "state_updates": updates,
+            "non_emitted_event_count": non_emitted_events,
+            "suppressed_horizon_events": suppressed,
+            "active_monitor_count": len(source_boxes),
+        }
+
     def build(
         self,
         source: BinanceDataSource,
@@ -1559,12 +2614,39 @@ class ConsolidationBreakoutRadar:
             0,
             int(getattr(self.settings, "consolidation_breakout_close_delay_sec", 90)),
         ) * 1000
+        daily_product_enabled = bool(
+            getattr(self.settings, "consolidation_daily_product_enable", False)
+        )
+        daily_shadow_mode = bool(
+            getattr(self.settings, "consolidation_daily_shadow_mode", True)
+        )
+        daily_boundary_events_enabled = bool(
+            getattr(
+                self.settings,
+                "consolidation_daily_boundary_events_enable",
+                False,
+            )
+        )
         cutoff_ms = observed_now_ms - close_delay_ms
-        timeframes = tuple(dict.fromkeys(
+        configured_legacy_timeframes = tuple(dict.fromkeys(
             str(value or "").strip().lower()
             for value in getattr(self.settings, "consolidation_breakout_timeframes", ("4h", "1d", "1w"))
             if _timeframe_ms(str(value or "")) > 0
         ))
+        timeframes = configured_legacy_timeframes
+        if daily_product_enabled and "1d" not in timeframes:
+            timeframes = (*timeframes, "1d")
+        if (
+            daily_product_enabled
+            and daily_boundary_events_enabled
+            and "4h" not in timeframes
+        ):
+            timeframes = ("4h", *timeframes)
+        elif daily_product_enabled and daily_boundary_events_enabled:
+            timeframes = (
+                "4h",
+                *(timeframe for timeframe in timeframes if timeframe != "4h"),
+            )
         if not timeframes:
             return self._empty_result("no_valid_timeframes")
 
@@ -1597,10 +2679,19 @@ class ConsolidationBreakoutRadar:
         )
 
         tracks = state.get("tracks", {})
+        daily_state = (
+            self._load_daily_state()
+            if daily_product_enabled
+            else {"tracks": {}}
+        )
+        daily_tracks = daily_state.get("tracks", {})
         state_updates: list[dict[str, Any]] = []
+        daily_state_updates: list[dict[str, Any]] = []
         required_by_key: dict[str, list[str]] = {}
         events: list[dict[str, Any]] = []
         chart_contexts: dict[str, tuple[list[Candle], int]] = {}
+        daily_structure_chart_contexts: dict[str, tuple[list[Candle], int]] = {}
+        daily_chart_needed_symbols: set[str] = set()
         errors: list[dict[str, str]] = []
         scanned_pairs = 0
         successful_pairs_by_symbol: dict[str, int] = {}
@@ -1611,6 +2702,20 @@ class ConsolidationBreakoutRadar:
         three_push_strong_count = 0
         three_push_normal_count = 0
         three_push_weak_suppressed_count = 0
+        box_evaluation: dict[str, dict[str, dict[str, int]]] = {}
+        box_state: dict[str, dict[str, dict[str, int]]] = {}
+        history_by_timeframe: dict[str, dict[str, int]] = {}
+        daily_observations: list[dict[str, Any]] = []
+        daily_detector_summary: dict[str, dict[str, Any]] = {}
+        daily_detector_failure_samples: list[dict[str, Any]] = []
+        daily_event_count = 0
+        daily_intraday_event_count = 0
+        daily_shadow_event_count = 0
+        daily_boundary_disabled_event_count = 0
+        daily_cached_pairs = 0
+        daily_active_monitor_count = 0
+        legacy_daily_events_suppressed = 0
+        daily_target_close_time = _latest_daily_close_time(cutoff_ms)
         strong_ratio = max(
             0.01,
             _to_float(getattr(self.settings, "consolidation_breakout_strong_volume_ratio", 1.20), 1.20),
@@ -1625,11 +2730,54 @@ class ConsolidationBreakoutRadar:
                 False,
             )
         )
-        kline_limit = max(spec.length + spec.stability for spec in HORIZONS) + RETEST_BARS + 4
+        legacy_kline_limit = (
+            max(spec.length + spec.stability for spec in HORIZONS)
+            + RETEST_BARS
+            + 4
+        )
+        daily_history_bars = max(
+            620,
+            legacy_kline_limit,
+            int(getattr(self.settings, "consolidation_daily_history_bars", 620)),
+        )
 
         for symbol in symbols:
             for timeframe in timeframes:
                 interval_ms = _timeframe_ms(timeframe)
+                legacy_timeframe_enabled = timeframe in configured_legacy_timeframes
+                legacy_specs = HORIZONS if legacy_timeframe_enabled else ()
+                three_push_for_pair = (
+                    three_push_enabled and legacy_timeframe_enabled
+                )
+                kline_limit = (
+                    daily_history_bars
+                    if daily_product_enabled and timeframe == "1d"
+                    else legacy_kline_limit
+                )
+                if daily_product_enabled and timeframe == "1d":
+                    cached_observation = self._cached_daily_observation(
+                        symbol=symbol,
+                        target_close_time=daily_target_close_time,
+                        legacy_tracks=(tracks if isinstance(tracks, dict) else {}),
+                        daily_tracks=(
+                            daily_tracks
+                            if isinstance(daily_tracks, dict)
+                            else {}
+                        ),
+                        legacy_timeframe_enabled=legacy_timeframe_enabled,
+                        three_push_enabled=three_push_for_pair,
+                    )
+                    if (
+                        cached_observation is not None
+                        and symbol not in daily_chart_needed_symbols
+                    ):
+                        daily_observations.append(cached_observation)
+                        daily_cached_pairs += 1
+                        scanned_pairs += 1
+                        successful_pairs_by_symbol[symbol] = (
+                            successful_pairs_by_symbol.get(symbol, 0) + 1
+                        )
+                        continue
                 try:
                     raw_klines = source.klines(symbol, interval=timeframe, limit=kline_limit)
                 except Exception as exc:
@@ -1638,6 +2786,14 @@ class ConsolidationBreakoutRadar:
                         "timeframe": timeframe,
                         "error": type(exc).__name__,
                     })
+                    if daily_product_enabled and timeframe == "1d":
+                        daily_observations.append({
+                            "symbol": symbol,
+                            "target_close_time": daily_target_close_time,
+                            "status": "request_error",
+                            "structures": [],
+                            "gate_failures": [type(exc).__name__],
+                        })
                     continue
                 if not raw_klines:
                     errors.append({
@@ -1645,6 +2801,14 @@ class ConsolidationBreakoutRadar:
                         "timeframe": timeframe,
                         "error": "empty_klines",
                     })
+                    if daily_product_enabled and timeframe == "1d":
+                        daily_observations.append({
+                            "symbol": symbol,
+                            "target_close_time": daily_target_close_time,
+                            "status": "empty",
+                            "structures": [],
+                            "gate_failures": ["empty_klines"],
+                        })
                     continue
                 parsed = [Candle.from_binance(row) for row in raw_klines]
                 candles = sorted(
@@ -1657,6 +2821,14 @@ class ConsolidationBreakoutRadar:
                         "timeframe": timeframe,
                         "error": "no_closed_candles",
                     })
+                    if daily_product_enabled and timeframe == "1d":
+                        daily_observations.append({
+                            "symbol": symbol,
+                            "target_close_time": daily_target_close_time,
+                            "status": "stale",
+                            "structures": [],
+                            "gate_failures": ["no_closed_candles"],
+                        })
                     continue
                 deduplicated: list[Candle] = []
                 for candle in candles:
@@ -1665,15 +2837,51 @@ class ConsolidationBreakoutRadar:
                     else:
                         deduplicated.append(candle)
                 candles = deduplicated
+                daily_pair_current = not (
+                    daily_product_enabled
+                    and timeframe == "1d"
+                    and candles[-1].close_time != daily_target_close_time
+                )
+                if daily_product_enabled and timeframe == "1d" and not daily_pair_current:
+                    daily_observations.append({
+                        "symbol": symbol,
+                        "target_close_time": daily_target_close_time,
+                        "status": "stale",
+                        "structures": [],
+                        "gate_failures": [
+                            f"latest_close_time={candles[-1].close_time}"
+                        ],
+                    })
+                elif daily_product_enabled and timeframe == "1d":
+                    daily_structure_chart_contexts[symbol] = (
+                        candles,
+                        len(candles) - 1,
+                    )
                 scanned_pairs += 1
                 successful_pairs_by_symbol[symbol] = (
                     successful_pairs_by_symbol.get(symbol, 0) + 1
                 )
                 closed_candles += len(candles)
+                history_diag = history_by_timeframe.setdefault(timeframe, {
+                    "pairs": 0,
+                    "bars": 0,
+                    "min_bars": len(candles),
+                    "max_bars": 0,
+                })
+                history_diag["pairs"] += 1
+                history_diag["bars"] += len(candles)
+                history_diag["min_bars"] = min(
+                    history_diag["min_bars"],
+                    len(candles),
+                )
+                history_diag["max_bars"] = max(
+                    history_diag["max_bars"],
+                    len(candles),
+                )
 
                 working: dict[str, dict[str, Any]] = {}
                 pending_indices: set[int] = set()
-                for spec in HORIZONS:
+                for spec in legacy_specs:
                     key = f"{symbol}|{timeframe}|{spec.name}"
                     existing = tracks.get(key, {}) if isinstance(tracks, dict) else {}
                     working[spec.name] = copy.deepcopy(existing) if isinstance(existing, dict) else {}
@@ -1687,7 +2895,7 @@ class ConsolidationBreakoutRadar:
                     else:
                         pending_indices.add(len(candles) - 1)
                 three_push_key = f"{symbol}|{timeframe}|three_push"
-                if three_push_enabled:
+                if three_push_for_pair:
                     existing = (
                         tracks.get(three_push_key, {})
                         if isinstance(tracks, dict)
@@ -1733,12 +2941,16 @@ class ConsolidationBreakoutRadar:
                     bar_events: list[dict[str, Any]] = []
                     candidates_on_bar: list[tuple[HorizonSpec, dict[str, Any]]] = []
                     processed_on_bar: list[tuple[HorizonSpec, str]] = []
-                    for spec in HORIZONS:
+                    for spec in legacy_specs:
                         track = working[spec.name]
                         last_close = int(track.get("last_close_time") or 0)
                         if candles[index].close_time <= last_close:
                             continue
                         key = f"{symbol}|{timeframe}|{spec.name}"
+                        evaluation_diag = box_evaluation.setdefault(
+                            timeframe,
+                            {},
+                        ).setdefault(spec.name, {})
                         updated, raw_event = _step_track(
                             track,
                             candles,
@@ -1746,6 +2958,7 @@ class ConsolidationBreakoutRadar:
                             interval_ms,
                             spec,
                             strong_ratio,
+                            evaluation_diag,
                         )
                         working[spec.name] = updated
                         processed_on_bar.append((spec, key))
@@ -1754,6 +2967,9 @@ class ConsolidationBreakoutRadar:
                                 "schema": "range_breakout.v1",
                                 "symbol": symbol,
                                 "timeframe": timeframe,
+                                "structure_timeframe": timeframe,
+                                "trigger_timeframe": timeframe,
+                                "trigger_kind": "closed_candle",
                                 "horizon": spec.name,
                                 "horizon_label": spec.label,
                                 "horizon_length": spec.length,
@@ -1765,7 +2981,7 @@ class ConsolidationBreakoutRadar:
                             )
                             raw_event["event_id"] = event_id
                             raw_event["dedup_key"] = event_id
-                            raw_event["score"] = _event_score(raw_event, spec, strong_ratio)
+                            raw_event.update(_range_quality(raw_event, spec))
                             candidates_on_bar.append((spec, raw_event))
 
                     eligible = [
@@ -1776,7 +2992,16 @@ class ConsolidationBreakoutRadar:
                             and event["event"] in {"breakout_up", "breakout_down"}
                         )
                     ]
-                    if eligible:
+                    new_daily_sender_owns_range = (
+                        daily_product_enabled
+                        and timeframe == "1d"
+                        and daily_boundary_events_enabled
+                        and not daily_shadow_mode
+                    )
+                    if eligible and new_daily_sender_owns_range:
+                        legacy_daily_events_suppressed += len(eligible)
+                        suppressed_horizon_events += len(candidates_on_bar)
+                    elif eligible:
                         winner_spec, winner = max(
                             eligible,
                             key=lambda item: (
@@ -1794,7 +3019,7 @@ class ConsolidationBreakoutRadar:
                         suppressed_horizon_events += len(candidates_on_bar)
 
                     three_push_processed = False
-                    if three_push_enabled:
+                    if three_push_for_pair:
                         three_push_track = working["three_push"]
                         last_close = _to_int(
                             three_push_track.get("last_close_time") or 0
@@ -2008,6 +3233,9 @@ class ConsolidationBreakoutRadar:
                                         "divergence": "price_macd_three_push",
                                         "symbol": symbol,
                                         "timeframe": timeframe,
+                                        "structure_timeframe": timeframe,
+                                        "trigger_timeframe": timeframe,
+                                        "trigger_kind": "closed_candle",
                                         "horizon": "three_push",
                                         "horizon_label": str(
                                             raw_event.get(
@@ -2053,7 +3281,6 @@ class ConsolidationBreakoutRadar:
                             int(event.get("priority") or 0),
                             int(
                                 event.get("quality_rank")
-                                or event.get("score")
                                 or 0
                             ),
                         ),
@@ -2064,6 +3291,112 @@ class ConsolidationBreakoutRadar:
                         if event_id:
                             chart_contexts[event_id] = (candles, index)
                     events.extend(ordered_bar_events)
+                if (
+                    daily_product_enabled
+                    and timeframe == "1d"
+                    and daily_pair_current
+                ):
+                    daily_pair = self._build_daily_pair(
+                        symbol=symbol,
+                        candles=candles,
+                        tracks=(daily_tracks if isinstance(daily_tracks, dict) else {}),
+                        strong_ratio=strong_ratio,
+                        require_strong=require_strong,
+                        emit_events=(
+                            daily_boundary_events_enabled
+                            and not daily_shadow_mode
+                        ),
+                    )
+                    daily_state_updates.extend(daily_pair["state_updates"])
+                    daily_observations.append(daily_pair["observation"])
+                    _merge_daily_detector_diagnostics(
+                        daily_detector_summary,
+                        daily_detector_failure_samples,
+                        symbol=symbol,
+                        diagnostics=daily_pair["detector_diagnostics"],
+                    )
+                    daily_events = daily_pair["events"]
+                    events.extend(daily_events)
+                    daily_event_count += len(daily_events)
+                    non_emitted_daily = _to_int(
+                        daily_pair.get("non_emitted_event_count")
+                    )
+                    if daily_shadow_mode:
+                        daily_shadow_event_count += non_emitted_daily
+                    elif not daily_boundary_events_enabled:
+                        daily_boundary_disabled_event_count += non_emitted_daily
+                    suppressed_horizon_events += _to_int(
+                        daily_pair.get("suppressed_horizon_events")
+                    )
+                    chart_contexts.update(daily_pair["chart_contexts"])
+                if (
+                    daily_product_enabled
+                    and daily_boundary_events_enabled
+                    and timeframe == "4h"
+                ):
+                    boundary_pair = self._build_daily_boundary_pair(
+                        symbol=symbol,
+                        candles=candles,
+                        daily_tracks=(
+                            daily_tracks
+                            if isinstance(daily_tracks, dict)
+                            else {}
+                        ),
+                        strong_ratio=strong_ratio,
+                        require_strong=require_strong,
+                        emit_events=not daily_shadow_mode,
+                    )
+                    daily_state_updates.extend(
+                        boundary_pair["state_updates"]
+                    )
+                    boundary_events = boundary_pair["events"]
+                    events.extend(boundary_events)
+                    daily_intraday_event_count += len(boundary_events)
+                    if boundary_events:
+                        daily_chart_needed_symbols.add(symbol)
+                    if daily_shadow_mode:
+                        daily_shadow_event_count += _to_int(
+                            boundary_pair.get("non_emitted_event_count")
+                        )
+                    suppressed_horizon_events += _to_int(
+                        boundary_pair.get("suppressed_horizon_events")
+                    )
+                    daily_active_monitor_count += _to_int(
+                        boundary_pair.get("active_monitor_count")
+                    )
+                for spec in legacy_specs:
+                    track = working[spec.name]
+                    status_diag = box_state.setdefault(
+                        timeframe,
+                        {},
+                    ).setdefault(spec.name, {
+                        "active_box": 0,
+                        "breakout_watch": 0,
+                        "cooldown": 0,
+                        "hunting": 0,
+                    })
+                    if isinstance(track.get("box"), dict):
+                        status_diag["active_box"] += 1
+                    elif _to_int(track.get("cooldown_until")) > observed_now_ms:
+                        status_diag["cooldown"] += 1
+                    else:
+                        status_diag["hunting"] += 1
+                    if isinstance(track.get("breakout"), dict):
+                        status_diag["breakout_watch"] += 1
+        daily_digest_batch = None
+        if daily_product_enabled and daily_target_close_time > 0 and universe:
+            rotation_round = _to_int(rotation_diagnostics.get("rotation_round"), 1)
+            daily_digest_batch = {
+                "target_close_time": daily_target_close_time,
+                "expected_symbols": list(universe),
+                "observations": daily_observations,
+                "round_completed": bool(
+                    rotation_diagnostics.get("round_completed")
+                ),
+                "round_token": f"{daily_target_close_time}:{rotation_round}",
+                "rotation_round": rotation_round,
+            }
+
         max_signals = max(
             0,
             int(getattr(self.settings, "consolidation_breakout_max_signals_per_scan", 8)),
@@ -2072,15 +3405,33 @@ class ConsolidationBreakoutRadar:
         outbound_chart_payloads: dict[str, dict[str, Any]] = {}
         for event in outbound_events:
             event_id = str(event.get("event_id") or "")
-            context = chart_contexts.get(event_id)
+            cross_timeframe_daily = (
+                event.get("structure_timeframe") == "1d"
+                and event.get("trigger_timeframe") == "4h"
+            )
+            context = (
+                daily_structure_chart_contexts.get(str(event.get("symbol") or ""))
+                if cross_timeframe_daily
+                else chart_contexts.get(event_id)
+            )
             if not event_id or context is None:
                 continue
             candles, event_index = context
-            outbound_chart_payloads[event_id] = _chart_payload(
+            payload = _chart_payload(
                 candles,
                 event_index,
                 event,
             )
+            if cross_timeframe_daily:
+                payload.update({
+                    "structure_timeframe": "1d",
+                    "trigger_timeframe": "4h",
+                    "trigger_marker": {
+                        "close_time": _to_int(event.get("close_time")),
+                        "price": _to_float(event.get("close")),
+                    },
+                })
+            outbound_chart_payloads[event_id] = payload
         withheld_event_ids = {
             str(event.get("event_id") or "") for event in events[max_signals:]
         }
@@ -2127,7 +3478,34 @@ class ConsolidationBreakoutRadar:
                 three_push_weak_suppressed_count
             ),
             "three_push_state_recoveries": three_push_state_recoveries,
+            "box_evaluation": box_evaluation,
+            "box_state": box_state,
+            "history_by_timeframe": history_by_timeframe,
             "state_update_count": len(state_updates),
+            "daily_product": {
+                "enabled": daily_product_enabled,
+                "shadow_mode": daily_shadow_mode,
+                "boundary_events_enabled": daily_boundary_events_enabled,
+                "detector_profile": DAILY_DETECTOR_PROFILE,
+                "target_close_time": daily_target_close_time,
+                "observation_count": len(daily_observations),
+                "daily_close_event_count": daily_event_count,
+                "intraday_event_count": daily_intraday_event_count,
+                "event_count": daily_event_count + daily_intraday_event_count,
+                "active_monitor_count": daily_active_monitor_count,
+                "shadow_event_count": daily_shadow_event_count,
+                "boundary_disabled_event_count": (
+                    daily_boundary_disabled_event_count
+                ),
+                "legacy_daily_events_suppressed": (
+                    legacy_daily_events_suppressed
+                ),
+                "state_update_count": len(daily_state_updates),
+                "history_bars": daily_history_bars,
+                "cached_pair_count": daily_cached_pairs,
+                "detector_summary": daily_detector_summary,
+                "failure_samples": daily_detector_failure_samples,
+            },
             "cutoff_ms": cutoff_ms,
         }
         diagnostics.update(rotation_diagnostics)
@@ -2141,6 +3519,8 @@ class ConsolidationBreakoutRadar:
             "events": outbound_events,
             "chart_payloads": outbound_chart_payloads,
             "state_updates": state_updates,
+            "daily_state_updates": daily_state_updates,
+            "daily_digest_batch": daily_digest_batch,
             "rotation_update": rotation_update,
             "diagnostics": diagnostics,
         }
@@ -2174,6 +3554,25 @@ class ConsolidationBreakoutRadar:
                 applicable.append(update)
             else:
                 deferred += 1
+        daily_updates = [
+            update
+            for update in result.get("daily_state_updates", [])
+            if isinstance(update, dict)
+            and str(update.get("key") or "")
+            and isinstance(update.get("state"), dict)
+        ]
+        daily_applicable: list[dict[str, Any]] = []
+        daily_deferred = 0
+        for update in daily_updates:
+            required = {
+                str(value)
+                for value in update.get("required_event_ids", [])
+                if str(value)
+            }
+            if required.issubset(accepted):
+                daily_applicable.append(update)
+            else:
+                daily_deferred += 1
         raw_rotation = result.get("rotation_update")
         rotation_update = raw_rotation if isinstance(raw_rotation, dict) else None
         if rotation_update is not None:
@@ -2187,11 +3586,17 @@ class ConsolidationBreakoutRadar:
                     "after_symbol": after_symbol,
                     "round": round_number,
                 }
-        if not applicable and rotation_update is None:
+        if not applicable and rotation_update is None and not daily_applicable:
             return {
-                "status": "deferred" if deferred else "no_changes",
+                "status": (
+                    "deferred"
+                    if deferred or daily_deferred
+                    else "no_changes"
+                ),
                 "applied": 0,
                 "deferred": deferred,
+                "daily_applied": 0,
+                "daily_deferred": daily_deferred,
                 "rotation_advanced": False,
             }
 
@@ -2212,11 +3617,39 @@ class ConsolidationBreakoutRadar:
             payload["updated_at"] = int(time.time())
             return payload
 
-        self.store.update(self.state_path, apply, {})
+        if applicable or rotation_update is not None:
+            self.store.update(self.state_path, apply, {})
+
+        if daily_applicable:
+            def apply_daily(current: Any) -> dict[str, Any]:
+                if (
+                    not isinstance(current, dict)
+                    or current.get("schema_version") != DAILY_STATE_SCHEMA_VERSION
+                    or current.get("detector_profile") != DAILY_DETECTOR_PROFILE
+                ):
+                    payload: dict[str, Any] = {
+                        "schema_version": DAILY_STATE_SCHEMA_VERSION,
+                        "detector_profile": DAILY_DETECTOR_PROFILE,
+                        "tracks": {},
+                    }
+                else:
+                    payload = copy.deepcopy(current)
+                    if not isinstance(payload.get("tracks"), dict):
+                        payload["tracks"] = {}
+                for update in daily_applicable:
+                    payload["tracks"][str(update["key"])] = copy.deepcopy(
+                        update["state"]
+                    )
+                payload["updated_at"] = int(time.time())
+                return payload
+
+            self.store.update(self.daily_state_path, apply_daily, {})
         return {
             "status": "ok",
             "applied": len(applicable),
             "deferred": deferred,
+            "daily_applied": len(daily_applicable),
+            "daily_deferred": daily_deferred,
             "rotation_advanced": rotation_update is not None,
         }
 

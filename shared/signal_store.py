@@ -151,6 +151,12 @@ STRUCTURED_SIGNAL_FIELDS = frozenset({
     "event_id", "event", "timeframe", "horizon", "box_upper",
     "box_lower", "box_age", "width_pct", "volume_ratio", "event_time",
     "breakout_distance_pct", "bars_since_breakout",
+    "structure_timeframe", "trigger_timeframe", "trigger_kind",
+    "detector_profile", "boundary_method", "box_id", "horizon_label",
+    "box_base_bars", "base_bars", "box_width_atr", "width_atr",
+    "box_efficiency", "efficiency", "candle_coverage_ratio",
+    "close_coverage_ratio", "current_close", "distance_upper_atr",
+    "distance_lower_atr", "lifecycle_state", "quality_reasons",
     "pattern_id", "structure", "direction", "neckline", "invalidation", "atr",
     "rule_version", "formed_close_time", "third_pivot_close_time", "push_prices",
     "push_macd", "push_volumes", "push_close_times", "push_macd_close_times",
@@ -171,6 +177,7 @@ THREE_PUSH_LIST_FIELDS = frozenset({
     "price_step_atr_ratios",
     "macd_step_weakening_pcts",
 })
+STRING_LIST_FIELDS = frozenset({"quality_reasons"})
 
 
 def _json_dumps(value: Any) -> str:
@@ -299,6 +306,12 @@ def _structured_payload(record: dict[str, Any]) -> dict[str, Any]:
                     continue
                 safe_values.append(item)
             payload[key] = safe_values
+        elif key in STRING_LIST_FIELDS and isinstance(value, list):
+            payload[key] = [
+                str(item)[:120]
+                for item in value[:8]
+                if isinstance(item, str) and item.strip()
+            ]
     return payload
 
 

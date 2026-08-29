@@ -93,6 +93,12 @@ labels = {
     "RADAR_SUMMARY_ENABLE": "资金摘要自动运行",
     "FUNDING_ALERT_ENABLE": "资金费率警报自动运行",
     "FLOW_RADAR_ENABLE": "五因子资金流自动运行",
+    "CONSOLIDATION_BREAKOUT_ENABLE": "盘整突破雷达自动运行",
+    "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "三推背离识别",
+    "CONSOLIDATION_DAILY_PRODUCT_ENABLE": "日线盘整产品计算",
+    "CONSOLIDATION_DAILY_SHADOW_MODE": "日线盘整影子模式",
+    "CONSOLIDATION_DAILY_DIGEST_ENABLE": "日线盘整日报",
+    "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE": "日线边界事件",
     "ANNOUNCEMENT_RISK_ENABLE": "公告风险自动运行",
 }
 values = json.load(sys.stdin)

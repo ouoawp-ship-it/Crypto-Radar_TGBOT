@@ -36,6 +36,11 @@ from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
 from radars.consolidation_breakout.radar import ConsolidationBreakoutRadar
+from radars.consolidation_breakout.daily_digest import (
+    ConsolidationDailyDigestAccumulator,
+    empty_daily_digest_state,
+    select_digest_signal_structures,
+)
 from radars.consolidation_breakout.chart import (
     PNG_SIGNATURE as CONSOLIDATION_CHART_PNG_SIGNATURE,
     render_consolidation_chart_png,
@@ -1321,6 +1326,198 @@ def _consolidation_chart_photo(
     return photo, "ready"
 
 
+def _process_consolidation_daily_digest(
+    settings: Settings,
+    store: JsonStore,
+    gateway: TelegramGateway,
+    args: argparse.Namespace,
+    result: Mapping[str, Any],
+) -> tuple[str | None, dict[str, object]]:
+    enabled = bool(
+        getattr(settings, "consolidation_daily_product_enable", False)
+        and getattr(settings, "consolidation_daily_digest_enable", False)
+    )
+    shadow_mode = bool(
+        getattr(settings, "consolidation_daily_shadow_mode", True)
+    )
+    diagnostics: dict[str, object] = {
+        "status": "disabled" if not enabled else "idle",
+        "enabled": enabled,
+        "shadow_mode": shadow_mode,
+        "batch_status": "unavailable",
+        "pending_count": 0,
+    }
+    if not enabled:
+        return None, diagnostics
+
+    now_ts = int(time.time())
+    state_path = Path(getattr(
+        settings,
+        "consolidation_daily_digest_state_path",
+        settings.data_dir / "consolidation_daily_digest_state.json",
+    ))
+    try:
+        state = store.load(state_path, empty_daily_digest_state())
+        accumulator = ConsolidationDailyDigestAccumulator(
+            state if isinstance(state, Mapping) else None,
+            max_items=int(getattr(
+                settings,
+                "consolidation_daily_digest_max_items",
+                20,
+            )),
+            max_retry_rounds=int(getattr(
+                settings,
+                "consolidation_daily_retry_rounds",
+                2,
+            )),
+            max_wait_sec=int(getattr(
+                settings,
+                "consolidation_daily_max_wait_sec",
+                3 * 3600,
+            )),
+            text_limit=max(1, min(
+                4096,
+                int(getattr(settings, "tg_push_split_limit", 3800)),
+            )),
+        )
+        raw_batch = result.get("daily_digest_batch")
+        batch = raw_batch if isinstance(raw_batch, Mapping) else {}
+        target_close_time = int(batch.get("target_close_time") or 0)
+        raw_expected = batch.get("expected_symbols")
+        expected_symbols = (
+            list(raw_expected)
+            if isinstance(raw_expected, (list, tuple, set))
+            else []
+        )
+        raw_observations = batch.get("observations")
+        observations = (
+            [item for item in raw_observations if isinstance(item, Mapping)]
+            if isinstance(raw_observations, (list, tuple))
+            else []
+        )
+        batch_ingested = False
+        if target_close_time > 0 and expected_symbols:
+            try:
+                accumulator.ingest_batch(
+                    target_close_time=target_close_time,
+                    expected_symbols=expected_symbols,
+                    observations=observations,
+                    now_ts=now_ts,
+                    round_completed=bool(batch.get("round_completed")),
+                    round_token=str(
+                        batch.get("round_token")
+                        or batch.get("rotation_round")
+                        or ""
+                    ),
+                )
+            except (TypeError, ValueError):
+                diagnostics["batch_status"] = "invalid"
+            else:
+                batch_ingested = True
+                diagnostics["batch_status"] = "ingested"
+                diagnostics["target_close_time"] = target_close_time
+
+        pending = accumulator.pending_digest(now_ts=now_ts)
+        if batch_ingested:
+            # Persist the complete accumulator and any newly frozen pending
+            # digest before a Telegram request can leave the process.
+            store.save(state_path, accumulator.snapshot())
+        current_snapshot = accumulator.snapshot()
+        pending_items = current_snapshot.get("pending_digests", [])
+        pending_items = pending_items if isinstance(pending_items, list) else []
+        diagnostics["pending_count"] = len(pending_items)
+        recent_snapshots = current_snapshot.get("recent_snapshots", [])
+        diagnostics["snapshot_count"] = len(
+            recent_snapshots if isinstance(recent_snapshots, list) else []
+        )
+
+        if shadow_mode:
+            diagnostics["status"] = (
+                "shadow_accumulating" if batch_ingested else "shadow_idle"
+            )
+            return None, diagnostics
+        if pending is None:
+            if pending_items:
+                delivery = pending_items[-1].get("delivery")
+                delivery = delivery if isinstance(delivery, Mapping) else {}
+                diagnostics["status"] = "retry_backoff"
+                diagnostics["next_attempt_at"] = int(
+                    delivery.get("next_attempt_at") or 0
+                )
+                return None, diagnostics
+            diagnostics["status"] = (
+                "accumulating" if batch_ingested else "batch_unavailable"
+            )
+            return None, diagnostics
+
+        # A pending digest loaded from a previous run is already durable, but
+        # save it once more so every delivery path has the same ordering rule.
+        store.save(state_path, accumulator.snapshot())
+        digest_id = str(pending.get("digest_id") or "")
+        signal_records: list[dict[str, Any]] = []
+        for item in select_digest_signal_structures(
+            pending,
+            max_items=int(getattr(
+                settings,
+                "consolidation_daily_digest_max_items",
+                20,
+            )),
+        ):
+            signal_records.append({
+                **dict(item),
+                "event": "daily_consolidation_digest",
+                "event_time": int(pending.get("target_close_time") or 0),
+                "timeframe": "1d",
+            })
+        push = gateway.send(
+            str(pending.get("text") or ""),
+            str(result.get("template_id") or "TG_CONSOLIDATION_BREAKOUT"),
+            str(pending.get("dedup_key") or digest_id),
+            send=args.send,
+            confirm_real_send=args.confirm_real_send,
+            cooldown_sec=7 * 86400,
+            parse_mode="HTML",
+            signal_records=signal_records or None,
+            photo=None,
+            enrich_market_context=False,
+        )
+        accepted = accumulator.mark_delivery(
+            digest_id,
+            status=push.status,
+            reason=push.reason,
+            now_ts=now_ts,
+        )
+        post_delivery_snapshot = accumulator.snapshot()
+        store.save(state_path, post_delivery_snapshot)
+        post_delivery_archives = post_delivery_snapshot.get(
+            "recent_snapshots",
+            [],
+        )
+        diagnostics.update({
+            "status": "delivered" if accepted else "pending_retained",
+            "pending_count": len(
+                post_delivery_snapshot.get("pending_digests", [])
+            ),
+            "snapshot_count": len(
+                post_delivery_archives
+                if isinstance(post_delivery_archives, list)
+                else []
+            ),
+            "delivery": {
+                "status": push.status,
+                "reason": push.reason,
+                "accepted": accepted,
+            },
+        })
+        return push.status, diagnostics
+    except Exception as exc:
+        diagnostics.update({
+            "status": "failed",
+            "error_code": type(exc).__name__,
+        })
+        return "failed", diagnostics
+
+
 def push_consolidation_breakout(
     settings: Settings,
     store: JsonStore,
@@ -1373,7 +1570,17 @@ def push_consolidation_breakout(
             accepted_event_ids.add(event_id)
 
     committed = radar.commit(result, accepted_event_ids)
+    daily_digest_status, daily_digest_diagnostics = (
+        _process_consolidation_daily_digest(
+            settings,
+            store,
+            gateway,
+            args,
+            result,
+        )
+    )
     diagnostics = dict(result.get("diagnostics") or {})
+    diagnostics["daily_digest"] = daily_digest_diagnostics
     diagnostics["delivery"] = {
         "events": len(result.get("events") or []),
         "accepted": len(accepted_event_ids),
@@ -1392,6 +1599,8 @@ def push_consolidation_breakout(
         "pushes": push_results,
     }
     statuses = {str(item.get("status") or "") for item in push_results}
+    if daily_digest_status:
+        statuses.add(daily_digest_status)
     if statuses & {"failed", "partial"}:
         overall = "failed"
     elif "blocked" in statuses:

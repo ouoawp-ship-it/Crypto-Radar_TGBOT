@@ -109,6 +109,26 @@ Telegram 话题和置顶说明仅允许手工创建或修复。普通雷达推�
 - 写后校验；
 - 失败恢复。
 
+自适应日线盘整产品只将以下四个布尔门禁加入低风险配置白名单：
+
+- `CONSOLIDATION_DAILY_PRODUCT_ENABLE`；
+- `CONSOLIDATION_DAILY_SHADOW_MODE`；
+- `CONSOLIDATION_DAILY_DIGEST_ENABLE`；
+- `CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE`。
+
+脱敏配置状态会显示这四项，默认依次为关闭、开启、关闭、关闭。历史K线长度、
+日报条数、重试/等待参数和状态文件路径不接受菜单或 `paopao_config.py set` 动态
+修改，防止日常运维误改识别口径或覆盖状态；这类调整只能走受审查的发布维护流程。
+
+上线时先开启 `PRODUCT_ENABLE` 并保持 `SHADOW_MODE=true`，至少验收一个目标日 K
+的完整全市场覆盖；随后在影子模式中开启 `DIGEST_ENABLE` 和
+`BOUNDARY_EVENTS_ENABLE`，最后才关闭影子模式。北京时间 08:00 只是日 K 收线参考
+点，日报要等轮转覆盖完成后才生成，不应按“08:00 是否收到消息”判断服务状态。
+
+回滚时先重新开启影子模式，再关闭日报和边界事件；需要时再关闭产品总开关。
+三个日线相关状态边界与旧盘整状态彼此独立，不要从菜单外手工删除状态文件。
+恢复影子模式会停止新产品真实流量，但保留尚未成功投递的事件供后续重放。
+
 输入 Token 时请关闭共享屏幕和录屏。状态只显示
 `configured/not_configured`，不会打印实际凭据。
 

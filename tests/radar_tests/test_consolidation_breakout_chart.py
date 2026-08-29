@@ -126,6 +126,71 @@ def decode_png(png: bytes) -> tuple[int, int, bytes]:
 
 
 class ConsolidationBreakoutChartTests(unittest.TestCase):
+    def test_adaptive_daily_chart_keeps_500_day_structure_context(self) -> None:
+        payload = sample_payload(560, interval_ms=24 * 60 * 60 * 1000)
+        event = range_event(payload, close_index=559, timeframe="1d")
+        event["detector_profile"] = "daily_adaptive.v1"
+        event["box_age"] = 500
+        candles = payload["candles"]
+        assert isinstance(candles, list)
+        payload["box_start_close_time"] = candles[59]["close_time"]
+
+        original = render_consolidation_chart_png(
+            event=event,
+            chart_payload=payload,
+        )
+        changed_payload = copy.deepcopy(payload)
+        changed_candles = changed_payload["candles"]
+        assert isinstance(changed_candles, list)
+        assert isinstance(changed_candles[100], dict)
+        changed_candles[100]["high"] = 145.0
+        changed = render_consolidation_chart_png(
+            event=event,
+            chart_payload=changed_payload,
+        )
+
+        self.assertNotEqual(original, changed)
+
+    def test_1d_structure_chart_accepts_later_4h_trigger_marker(self) -> None:
+        payload = sample_payload(560, interval_ms=24 * 60 * 60 * 1000)
+        event = range_event(payload, close_index=559, timeframe="4h")
+        event.update({
+            "detector_profile": "daily_adaptive.v1",
+            "structure_timeframe": "1d",
+            "trigger_timeframe": "4h",
+            "box_age": 500,
+            "close_time": int(event["close_time"]) + 4 * 60 * 60 * 1000,
+            "close": 109.2,
+        })
+        candles = payload["candles"]
+        assert isinstance(candles, list)
+        payload.update({
+            "box_start_close_time": candles[59]["close_time"],
+            "structure_timeframe": "1d",
+            "trigger_timeframe": "4h",
+            "trigger_marker": {
+                "close_time": event["close_time"],
+                "price": event["close"],
+            },
+        })
+
+        rendered = render_consolidation_chart_png(
+            event=event,
+            chart_payload=payload,
+        )
+        changed_payload = copy.deepcopy(payload)
+        changed_candles = changed_payload["candles"]
+        assert isinstance(changed_candles, list)
+        assert isinstance(changed_candles[100], dict)
+        changed_candles[100]["low"] = 80.0
+        changed = render_consolidation_chart_png(
+            event=event,
+            chart_payload=changed_payload,
+        )
+
+        self.assertTrue(rendered.startswith(PNG_SIGNATURE))
+        self.assertNotEqual(rendered, changed)
+
     def test_range_chart_is_deterministic_and_telegram_safe(self) -> None:
         payload = sample_payload()
         event = range_event(payload)
