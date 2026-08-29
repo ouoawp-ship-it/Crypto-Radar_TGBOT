@@ -1439,20 +1439,25 @@ class TelegramGatewayTests(unittest.TestCase):
                 "两段价格推进各需至少0.10 ATR",
                 "两段MACD各需至少弱化5%",
                 "两项都不满足为“弱”并仅更新内部状态，不推送",
-                "不再显示未经回测校准的/100评分",
-                "原箱体事件评分不变",
+                "自适应1D产品另用短期20/30/40/50",
+                "长期180/240/300/360/420/500根锚点",
+                "闭合4H K线只负责越界早期预警，不等同于1D确认",
+                "不是08:00定点推送",
+                "箱体与三推卡片均取消未经回测校准的/100评分",
                 "不会因短/中/长期三个箱体重复",
                 "三推背离独立开关当前已启用",
                 "随信号K线图",
-                "同周期价格K线、成交量和MACD",
+                "自适应1D图最多保留620根",
+                "1D STRUCT / 4H TRIGGER",
                 "价格P1/P2/P3、三个独立MACD枢轴",
-                "只复用本轮已闭合K线，不增加行情请求",
+                "缺少跨周期图表上下文时只按受限预算补取1D历史",
                 "不参与信号判断、质量标签、排序或去重",
+                "新版本默认产品关闭且影子模式开启",
             ):
                 self.assertIn(phrase, intro)
             self.assertEqual(
                 topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-08-29-consolidation-breakout-v5",
+                "2026-08-30-consolidation-breakout-v6",
             )
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

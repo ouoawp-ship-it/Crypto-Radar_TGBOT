@@ -121,6 +121,12 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
         self.assertFalse(status["CONSOLIDATION_BREAKOUT_ENABLE"])
         self.assertFalse(status["CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE"])
+        self.assertFalse(status["CONSOLIDATION_DAILY_PRODUCT_ENABLE"])
+        self.assertTrue(status["CONSOLIDATION_DAILY_SHADOW_MODE"])
+        self.assertFalse(status["CONSOLIDATION_DAILY_DIGEST_ENABLE"])
+        self.assertFalse(
+            status["CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE"]
+        )
 
     def test_admin_status_marks_invalid_value_without_exposing_it(self) -> None:
         invalid = "not-a-private-admin"
@@ -236,6 +242,10 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "ANNOUNCEMENT_RISK_ENABLE",
             "CONSOLIDATION_BREAKOUT_ENABLE",
             "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
+            "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
+            "CONSOLIDATION_DAILY_SHADOW_MODE",
+            "CONSOLIDATION_DAILY_DIGEST_ENABLE",
+            "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE",
         )
         for key in keys:
             with self.subTest(key=key):
@@ -254,6 +264,21 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         with self.assertRaises(ConfigManagerError):
             self.manager.set("PULSE_RADAR_ENABLE", "sometimes")
         self.assertEqual(path.read_bytes(), before)
+
+    def test_daily_tuning_and_state_paths_are_not_runtime_allowlisted(self) -> None:
+        for key in (
+            "CONSOLIDATION_DAILY_HISTORY_BARS",
+            "CONSOLIDATION_DAILY_DIGEST_MAX_ITEMS",
+            "CONSOLIDATION_DAILY_RETRY_ROUNDS",
+            "CONSOLIDATION_DAILY_MAX_WAIT_SEC",
+            "CONSOLIDATION_DAILY_STATE_FILE",
+            "CONSOLIDATION_DAILY_DIGEST_STATE_FILE",
+        ):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                ConfigManagerError,
+                "not allowlisted",
+            ):
+                self.manager.set(key, "1")
 
 
 if __name__ == "__main__":

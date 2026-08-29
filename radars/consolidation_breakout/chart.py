@@ -12,6 +12,7 @@ from radars.pulse.chart import Canvas, CHART_COLORS, PNG_SIGNATURE
 
 CST = timezone(timedelta(hours=8))
 RANGE_CANDLE_LIMIT = 264
+DAILY_RANGE_CANDLE_LIMIT = 620
 THREE_PUSH_CANDLE_LIMIT = 120
 
 ANNOTATION_COLORS = {
@@ -208,10 +209,19 @@ def _normalize_payload(
     ]
     if len(ordered) < 5:
         raise ValueError("at least five valid closed candles are required")
-    if not any(
+    exact_event_candle = any(
         _integer(candle.get("close_time")) == event_close_time
         for candle, _macd in ordered
-    ):
+    )
+    trigger_marker = chart_payload.get("trigger_marker")
+    cross_timeframe_marker = (
+        isinstance(trigger_marker, Mapping)
+        and _integer(trigger_marker.get("close_time")) == event_close_time
+        and _number(trigger_marker.get("price")) > 0
+        and str(chart_payload.get("structure_timeframe") or "")
+        != str(chart_payload.get("trigger_timeframe") or "")
+    )
+    if not exact_event_candle and not cross_timeframe_marker:
         raise ValueError("event close_time is absent from chart candles")
     return (
         [candle for candle, _macd in ordered],
@@ -232,8 +242,13 @@ def _visible_window(
         return candles[start:], macd[start:]
 
     box_age = max(0, _integer(event.get("box_age")))
+    range_limit = (
+        DAILY_RANGE_CANDLE_LIMIT
+        if str(event.get("detector_profile") or "") == "daily_adaptive.v1"
+        else RANGE_CANDLE_LIMIT
+    )
     desired = min(
-        RANGE_CANDLE_LIMIT,
+        range_limit,
         max(80, box_age + 16 if box_age > 0 else 120),
     )
     start = max(0, len(candles) - desired)
@@ -248,7 +263,7 @@ def _visible_window(
             len(candles) - 1,
         )
         start = max(0, box_index - 8)
-        start = max(start, len(candles) - RANGE_CANDLE_LIMIT)
+        start = max(start, len(candles) - range_limit)
         if len(candles) - start < min(80, len(candles)):
             start = max(0, len(candles) - min(80, len(candles)))
     return candles[start:], macd[start:]
@@ -304,11 +319,22 @@ def render_consolidation_chart_png(
     event_color = _event_color(event_name, direction)
     symbol = str(event.get("symbol") or "UNKNOWN").upper()[:18]
     timeframe = str(event.get("timeframe") or "").upper()[:6]
+    structure_timeframe = str(
+        chart_payload.get("structure_timeframe") or timeframe
+    ).upper()[:6]
+    trigger_timeframe = str(
+        chart_payload.get("trigger_timeframe") or timeframe
+    ).upper()[:6]
     event_label = EVENT_LABELS.get(event_name, "EVENT")
     canvas.text(
         plot_left + 4,
         8,
-        f"{symbol}  {timeframe}  BINANCE  {event_label}",
+        (
+            f"{symbol}  {structure_timeframe} STRUCT / "
+            f"{trigger_timeframe} TRIGGER  {event_label}"
+            if structure_timeframe != trigger_timeframe
+            else f"{symbol}  {timeframe}  BINANCE  {event_label}"
+        ),
         colors["ink"],
         scale=1,
     )
@@ -356,6 +382,14 @@ def render_consolidation_chart_png(
         price_references.append(neckline)
     if invalidation > 0:
         price_references.append(invalidation)
+    trigger_marker = chart_payload.get("trigger_marker")
+    trigger_price = (
+        _number(trigger_marker.get("price"))
+        if isinstance(trigger_marker, Mapping)
+        else 0.0
+    )
+    if trigger_price > 0:
+        price_references.append(trigger_price)
     raw_low = min(
         [_number(candle.get("low")) for candle in visible] + price_references
     )
@@ -390,7 +424,7 @@ def render_consolidation_chart_png(
         canvas.line(x, price_top, x, macd_bottom, colors["grid"])
         label = _time_label(
             _integer(visible[position].get("close_time")),
-            timeframe,
+            structure_timeframe,
         )
         canvas.text(
             max(plot_left, min(plot_right - len(label) * 6, x - len(label) * 3)),
@@ -501,7 +535,11 @@ def render_consolidation_chart_png(
                 scale=1,
             )
 
-    event_badge = "EVENT"
+    event_badge = (
+        f"{trigger_timeframe} EVENT"
+        if structure_timeframe != trigger_timeframe
+        else "EVENT"
+    )
     event_badge_width = len(event_badge) * 6 + 8
     badge_x = max(
         plot_left,
@@ -521,6 +559,15 @@ def render_consolidation_chart_png(
         (255, 255, 255),
         scale=1,
     )
+    if trigger_price > 0:
+        trigger_y = price_y(trigger_price)
+        canvas.rect(
+            max(plot_left, event_x - 4),
+            max(price_top, trigger_y - 4),
+            min(plot_right, event_x + 4),
+            min(price_bottom, trigger_y + 4),
+            event_color,
+        )
 
     push_times = event.get("push_close_times")
     push_indices: list[int] = []

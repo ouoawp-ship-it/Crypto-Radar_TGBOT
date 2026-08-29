@@ -158,7 +158,12 @@ class SignalEventStoreTests(unittest.TestCase):
                     "event_id": "BTCUSDT:1d:long:strong_breakout_up:1000",
                     "event": "strong_breakout_up",
                     "timeframe": "1d",
+                    "structure_timeframe": "1d",
+                    "trigger_timeframe": "1d",
+                    "trigger_kind": "daily_close",
+                    "detector_profile": "daily_adaptive.v1",
                     "horizon": "long",
+                    "base_bars": 500,
                     "box_upper": 101.5,
                     "box_lower": 88.0,
                     "box_age": 240,
@@ -166,6 +171,7 @@ class SignalEventStoreTests(unittest.TestCase):
                     "volume_ratio": 1.8,
                     "score": 82,
                     "event_time": 1000,
+                    "quality_reasons": ["上下沿触碰 3/3", "收盘覆盖 98%"],
                 }],
             )
             item = SignalEventStore(
@@ -175,6 +181,15 @@ class SignalEventStoreTests(unittest.TestCase):
         self.assertEqual(item["module"], "consolidation")
         self.assertEqual(item["payload"]["facts"]["timeframe"], "1d")
         self.assertEqual(item["payload"]["facts"]["horizon"], "long")
+        self.assertEqual(
+            item["payload"]["facts"]["detector_profile"],
+            "daily_adaptive.v1",
+        )
+        self.assertEqual(item["payload"]["facts"]["base_bars"], 500)
+        self.assertEqual(
+            item["payload"]["facts"]["quality_reasons"],
+            ["上下沿触碰 3/3", "收盘覆盖 98%"],
+        )
         self.assertEqual(item["payload"]["facts"]["box_upper"], 101.5)
         self.assertEqual(item["score"], 82)
         self.assertEqual(

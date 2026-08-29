@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +18,7 @@ from radars.consolidation_breakout.radar import (
     ConsolidationBreakoutRadar,
     _chart_payload,
     _detect_three_push_pattern,
+    _latest_daily_close_time,
     _step_three_push_track,
     _three_push_quality,
     count_touch_clusters,
@@ -72,6 +74,25 @@ def breakout_up(index: int, *, volume: float = 100.0) -> list[Any]:
 
 def breakout_down(index: int, *, volume: float = 100.0) -> list[Any]:
     return kline(index, high=100.0, low=96.0, close=96.4, volume=volume)
+
+
+def utc_daily_range_rows(count: int = 510) -> list[list[Any]]:
+    base = BASE_MS // DAY_MS * DAY_MS
+    rows = range_klines(count)
+    for index, row in enumerate(rows):
+        row[0] = base + index * DAY_MS
+        row[6] = base + (index + 1) * DAY_MS - 1
+    return rows
+
+
+def utc_daily_rows_with_breakout(base_bars: int = 510) -> list[list[Any]]:
+    rows = utc_daily_range_rows(base_bars)
+    base = int(rows[0][0])
+    row = breakout_up(base_bars, volume=180.0)
+    row[0] = base + base_bars * DAY_MS
+    row[6] = base + (base_bars + 1) * DAY_MS - 1
+    rows.append(row)
+    return rows
 
 
 def three_push_candles(
@@ -222,6 +243,20 @@ class UniverseSource:
         return [symbol for symbol, _interval, _limit in self.calls]
 
 
+class IntervalSource(UniverseSource):
+    def __init__(
+        self,
+        symbols: list[str],
+        rows_by_interval: dict[tuple[str, str], list[list[Any]]],
+    ) -> None:
+        super().__init__(symbols, {})
+        self.rows_by_interval = rows_by_interval
+
+    def klines(self, symbol: str, interval: str, limit: int) -> list[list[Any]]:
+        self.calls.append((symbol, interval, limit))
+        return list(self.rows_by_interval[(symbol, interval)][-limit:])
+
+
 def settings_for(root: Path, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "data_dir": root,
@@ -265,6 +300,867 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
         self.assertEqual(close_times[-1], int(event["close_time"]))
         for field in ("candles", "macd", "chart_payload", "chart_payloads"):
             self.assertNotIn(field, event)
+
+    def test_latest_daily_close_time_respects_utc_boundary(self) -> None:
+        close_time = BASE_MS // DAY_MS * DAY_MS - 1
+
+        self.assertEqual(_latest_daily_close_time(close_time), close_time)
+        self.assertEqual(_latest_daily_close_time(close_time + 1), close_time)
+        self.assertEqual(
+            _latest_daily_close_time(close_time + DAY_MS),
+            close_time + DAY_MS,
+        )
+
+    def test_daily_product_adds_1d_and_only_expands_its_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = utc_daily_rows_with_breakout()
+            settings = settings_for(
+                root,
+                consolidation_breakout_timeframes=("4h",),
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+                consolidation_daily_product_enable=True,
+                consolidation_daily_shadow_mode=True,
+                consolidation_daily_history_bars=620,
+            )
+            source = UniverseSource(
+                ["TESTUSDT"],
+                {"TESTUSDT": rows},
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(source, now_ms=closed_now(rows))  # type: ignore[arg-type]
+
+        calls = {(interval, limit) for _symbol, interval, limit in source.calls}
+        self.assertEqual(calls, {("4h", 264), ("1d", 620)})
+        self.assertEqual(result["diagnostics"]["timeframes"], ["4h", "1d"])
+        self.assertFalse(any(
+            event["timeframe"] == "1d"
+            and event["detector_profile"] == "legacy_fixed.v1"
+            for event in result["events"]
+        ))
+        self.assertEqual(
+            result["diagnostics"]["history_by_timeframe"]["1d"]["max_bars"],
+            len(rows),
+        )
+
+    def test_daily_box_uses_4h_closed_candle_as_explicit_trigger(self) -> None:
+        interval_ms = 4 * 60 * 60 * 1000
+        candles: list[Candle] = []
+        for index in range(80):
+            phase = index % 4
+            open_time = BASE_MS + index * interval_ms
+            candles.append(Candle(
+                open_time=open_time,
+                open=100.0,
+                high=103.0 if phase == 0 else 101.0,
+                low=97.0 if phase == 2 else 99.0,
+                close=99.8 if index % 2 == 0 else 100.2,
+                volume=100.0,
+                close_time=open_time + interval_ms - 1,
+            ))
+        open_time = BASE_MS + 80 * interval_ms
+        candles.append(Candle(
+            open_time=open_time,
+            open=100.0,
+            high=104.0,
+            low=100.0,
+            close=103.6,
+            volume=180.0,
+            close_time=open_time + interval_ms - 1,
+        ))
+        daily_box = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": BASE_MS - DAY_MS,
+            "window_start_close_time": BASE_MS - 500 * DAY_MS,
+            "quality_label": "strong",
+            "quality_label_zh": "强",
+            "quality_reasons": [
+                {"factor": "touch_clusters", "upper": 3, "lower": 3},
+                {"factor": "close_coverage", "value": 0.99},
+            ],
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            radar = ConsolidationBreakoutRadar(
+                settings_for(root),
+                JsonStore(root),
+            )
+            result = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks={
+                    "TESTUSDT|1d|long": {"box": daily_box},
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+
+        self.assertEqual(len(result["events"]), 1)
+        event = result["events"][0]
+        self.assertEqual(event["structure_timeframe"], "1d")
+        self.assertEqual(event["trigger_timeframe"], "4h")
+        self.assertEqual(event["trigger_kind"], "intraday_closed_candle")
+        self.assertEqual(event["box_age"], 510)
+        self.assertEqual(event["detector_profile"], "daily_adaptive.v1")
+        self.assertNotIn("score", event)
+        self.assertIn("结构周期 1D ｜ 触发周期 4H", event["text"])
+        monitor_updates = [
+            update
+            for update in result["state_updates"]
+            if update["key"].endswith("monitor_4h")
+        ]
+        self.assertEqual(len(monitor_updates), 2)
+        checkpoint = next(
+            update
+            for update in monitor_updates
+            if not update["required_event_ids"]
+        )
+        self.assertEqual(
+            checkpoint["state"]["pending_event"]["event_id"],
+            event["event_id"],
+        )
+        accepted_update = next(
+            update
+            for update in monitor_updates
+            if update["required_event_ids"]
+        )
+        self.assertEqual(
+            accepted_update["required_event_ids"],
+            [event["event_id"]],
+        )
+
+    def test_unaccepted_4h_trigger_replays_after_daily_box_disappears(self) -> None:
+        interval_ms = 4 * 60 * 60 * 1000
+        candles: list[Candle] = []
+        for index in range(80):
+            phase = index % 4
+            open_time = BASE_MS + index * interval_ms
+            candles.append(Candle(
+                open_time=open_time,
+                open=100.0,
+                high=103.0 if phase == 0 else 101.0,
+                low=97.0 if phase == 2 else 99.0,
+                close=99.8 if index % 2 == 0 else 100.2,
+                volume=100.0,
+                close_time=open_time + interval_ms - 1,
+            ))
+        open_time = BASE_MS + 80 * interval_ms
+        candles.append(Candle(
+            open_time=open_time,
+            open=100.0,
+            high=104.0,
+            low=100.0,
+            close=103.6,
+            volume=180.0,
+            close_time=open_time + interval_ms - 1,
+        ))
+        daily_box = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": BASE_MS - DAY_MS,
+            "window_start_close_time": BASE_MS - 500 * DAY_MS,
+            "quality_label": "strong",
+            "quality_label_zh": "强",
+            "quality_reasons": [],
+        }
+        monitor_key = "TESTUSDT|1d|long|monitor_4h"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root)
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+            first = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks={
+                    "TESTUSDT|1d|long": {"box": daily_box},
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            event_id = str(first["events"][0]["event_id"])
+            rejected = radar.commit(
+                {"daily_state_updates": first["state_updates"]},
+                [],
+            )
+            pending_state = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )
+            pending_tracks = pending_state["tracks"]
+
+            shadow = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks=pending_tracks,
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=False,
+            )
+            replay = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks=pending_tracks,
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            before_failed_replay = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )
+            failed_replay = radar.commit(
+                {"daily_state_updates": replay["state_updates"]},
+                [],
+            )
+            after_failed_replay = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )
+            accepted = radar.commit(
+                {"daily_state_updates": replay["state_updates"]},
+                [event_id],
+            )
+            accepted_state = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )
+            final = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks=accepted_state["tracks"],
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+
+        self.assertEqual(rejected["daily_deferred"], 1)
+        self.assertEqual(
+            pending_tracks[monitor_key]["pending_event"]["event_id"],
+            event_id,
+        )
+        self.assertEqual(shadow["events"], [])
+        self.assertEqual(shadow["state_updates"], [])
+        self.assertEqual([event["event_id"] for event in replay["events"]], [event_id])
+        self.assertEqual(failed_replay["daily_deferred"], 1)
+        self.assertEqual(after_failed_replay, before_failed_replay)
+        self.assertEqual(accepted["daily_deferred"], 0)
+        self.assertNotIn("pending_event", accepted_state["tracks"][monitor_key])
+        self.assertEqual(final["events"], [])
+
+    def test_4h_monitor_serializes_two_events_across_scans(self) -> None:
+        interval_ms = 4 * 60 * 60 * 1000
+        candles: list[Candle] = []
+        for index, close in enumerate((100.0, 103.6, 100.0)):
+            open_time = BASE_MS + index * interval_ms
+            candles.append(Candle(
+                open_time=open_time,
+                open=100.0,
+                high=max(101.0, close + 0.4),
+                low=min(99.0, close - 0.4),
+                close=close,
+                volume=100.0,
+                close_time=open_time + interval_ms - 1,
+            ))
+        daily_box = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": BASE_MS - DAY_MS,
+            "window_start_close_time": BASE_MS - 500 * DAY_MS,
+            "quality_label": "strong",
+            "quality_reasons": [],
+            "upper_sweep_sent": False,
+            "lower_sweep_sent": False,
+        }
+        monitor_key = "TESTUSDT|1d|long|monitor_4h"
+        source_id = (
+            f"{daily_box['formed_close_time']}:"
+            f"{daily_box['lower']:.12g}:{daily_box['upper']:.12g}"
+        )
+        initial_tracks = {
+            "TESTUSDT|1d|long": {"box": daily_box},
+            monitor_key: {
+                "box": daily_box,
+                "breakout": None,
+                "cooldown_until": 0,
+                "source_box_id": source_id,
+                "last_close_time": candles[0].close_time,
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root)
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+            first = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks=initial_tracks,
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            first_id = str(first["events"][0]["event_id"])
+            radar.commit(
+                {"daily_state_updates": first["state_updates"]},
+                [first_id],
+            )
+            after_first = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )["tracks"]
+            second = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks={
+                    **after_first,
+                    "TESTUSDT|1d|long": {
+                        "box": None,
+                        "last_close_time": candles[-1].close_time,
+                    },
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            second_id = str(second["events"][0]["event_id"])
+            radar.commit(
+                {"daily_state_updates": second["state_updates"]},
+                [],
+            )
+            after_rejection = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )["tracks"]
+            replay = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks=after_rejection,
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+
+        self.assertEqual(
+            [event["event"] for event in first["events"]],
+            ["breakout_up"],
+        )
+        self.assertEqual(
+            after_first[monitor_key]["last_close_time"],
+            candles[1].close_time,
+        )
+        self.assertNotIn("pending_event", after_first[monitor_key])
+        self.assertEqual(
+            [event["event"] for event in second["events"]],
+            ["fake_breakout"],
+        )
+        self.assertEqual(second["events"][0]["box_age"], 510)
+        self.assertEqual(
+            after_rejection[monitor_key]["pending_event"]["event_id"],
+            second_id,
+        )
+        self.assertEqual(
+            [event["event_id"] for event in replay["events"]],
+            [second_id],
+        )
+
+    def test_4h_monitor_freezes_retirement_cutoff_across_scans(self) -> None:
+        interval_ms = 4 * 60 * 60 * 1000
+        closes = (100.0, 103.6, 104.0, 100.0)
+        candles = [
+            Candle(
+                open_time=BASE_MS + index * interval_ms,
+                open=104.0 if index == 2 else 100.0,
+                high=max(101.0, close + 0.4),
+                low=103.4 if index == 2 else min(99.0, close - 0.4),
+                close=close,
+                volume=100.0,
+                close_time=BASE_MS + (index + 1) * interval_ms - 1,
+            )
+            for index, close in enumerate(closes)
+        ]
+        box = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": BASE_MS - DAY_MS,
+            "window_start_close_time": BASE_MS - 500 * DAY_MS,
+            "quality_label": "strong",
+            "quality_reasons": [],
+        }
+        monitor_key = "TESTUSDT|1d|long|monitor_4h"
+        source_id = (
+            f"{box['formed_close_time']}:"
+            f"{box['lower']:.12g}:{box['upper']:.12g}"
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root)
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+            first = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks={
+                    "TESTUSDT|1d|long": {
+                        "box": None,
+                        "last_close_time": candles[2].close_time,
+                    },
+                    monitor_key: {
+                        "box": box,
+                        "breakout": None,
+                        "cooldown_until": 0,
+                        "source_box_id": source_id,
+                        "last_close_time": candles[0].close_time,
+                    },
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            first_id = str(first["events"][0]["event_id"])
+            radar.commit(
+                {"daily_state_updates": first["state_updates"]},
+                [first_id],
+            )
+            after_first = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )["tracks"]
+            second = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=candles,
+                daily_tracks={
+                    **after_first,
+                    "TESTUSDT|1d|long": {
+                        "box": None,
+                        "last_close_time": candles[3].close_time,
+                    },
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+
+        self.assertEqual([event["event"] for event in first["events"]], ["breakout_up"])
+        self.assertEqual(
+            after_first[monitor_key]["retirement"]["cutoff_close_time"],
+            candles[2].close_time,
+        )
+        self.assertEqual(second["events"], [])
+        final_update = [
+            update
+            for update in second["state_updates"]
+            if update["key"] == monitor_key
+        ][-1]
+        self.assertIsNone(final_update["state"]["box"])
+        self.assertEqual(
+            final_update["state"]["last_close_time"],
+            candles[2].close_time,
+        )
+
+    def test_4h_monitor_persists_retirement_when_trigger_data_lags(self) -> None:
+        interval_ms = 4 * 60 * 60 * 1000
+        candle = Candle(
+            open_time=BASE_MS,
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.0,
+            volume=100.0,
+            close_time=BASE_MS + interval_ms - 1,
+        )
+        box_a = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": BASE_MS - DAY_MS,
+            "window_start_close_time": BASE_MS - 500 * DAY_MS,
+            "quality_label": "strong",
+            "quality_reasons": [],
+        }
+        box_b = {
+            **box_a,
+            "upper": 110.0,
+            "lower": 100.0,
+            "formed_close_time": BASE_MS,
+        }
+        box_c = {
+            **box_a,
+            "upper": 120.0,
+            "lower": 108.0,
+            "formed_close_time": BASE_MS + DAY_MS,
+        }
+        monitor_key = "TESTUSDT|1d|long|monitor_4h"
+        source_id_a = (
+            f"{box_a['formed_close_time']}:"
+            f"{box_a['lower']:.12g}:{box_a['upper']:.12g}"
+        )
+        cutoff_b = candle.close_time + 2 * interval_ms
+        cutoff_c = candle.close_time + 3 * interval_ms
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root)
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+            first = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=[candle],
+                daily_tracks={
+                    "TESTUSDT|1d|long": {
+                        "box": box_b,
+                        "last_close_time": cutoff_b,
+                    },
+                    monitor_key: {
+                        "box": box_a,
+                        "breakout": None,
+                        "cooldown_until": 0,
+                        "source_box_id": source_id_a,
+                        "last_close_time": candle.close_time,
+                    },
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+            radar.commit(
+                {"daily_state_updates": first["state_updates"]},
+                [],
+            )
+            after_first = store.load(
+                settings.consolidation_daily_state_path,
+                {},
+            )["tracks"]
+            second = radar._build_daily_boundary_pair(
+                symbol="TESTUSDT",
+                candles=[candle],
+                daily_tracks={
+                    **after_first,
+                    "TESTUSDT|1d|long": {
+                        "box": box_c,
+                        "last_close_time": cutoff_c,
+                    },
+                },
+                strong_ratio=1.20,
+                require_strong=False,
+                emit_events=True,
+            )
+
+        retirement = after_first[monitor_key]["retirement"]
+        self.assertEqual(first["events"], [])
+        self.assertEqual(retirement["cutoff_close_time"], cutoff_b)
+        self.assertEqual(retirement["replacement_box"]["upper"], 110.0)
+        self.assertEqual(second["events"], [])
+        self.assertEqual(second["state_updates"], [])
+
+    def test_4h_trigger_chart_uses_real_1d_structure_history(self) -> None:
+        daily_rows = utc_daily_range_rows(511)
+        target_close_time = int(daily_rows[-1][6])
+        interval_ms = 4 * 60 * 60 * 1000
+        trigger_close_time = target_close_time + interval_ms
+        first_open = trigger_close_time - 81 * interval_ms + 1
+        trigger_rows: list[list[Any]] = []
+        for index in range(81):
+            phase = index % 4
+            open_time = first_open + index * interval_ms
+            breakout = index == 80
+            trigger_rows.append([
+                open_time,
+                "100",
+                "104" if breakout else "103" if phase == 0 else "101",
+                "100" if breakout else "97" if phase == 2 else "99",
+                "103.6" if breakout else "99.8" if index % 2 == 0 else "100.2",
+                "180" if breakout else "100",
+                open_time + interval_ms - 1,
+                "0",
+                100,
+                "0",
+                "0",
+                "0",
+            ])
+        box_start_close_time = target_close_time - 500 * DAY_MS
+        daily_box = {
+            "detector_profile": "daily_adaptive.v1",
+            "upper": 103.0,
+            "lower": 97.0,
+            "atr": 2.0,
+            "width_atr": 3.0,
+            "width_pct": 6.0,
+            "efficiency": 0.10,
+            "candle_coverage": 0.96,
+            "close_coverage": 0.99,
+            "upper_touches": 3,
+            "lower_touches": 3,
+            "base_bars": 500,
+            "active_bars": 10,
+            "formed_close_time": target_close_time - DAY_MS,
+            "window_start_close_time": box_start_close_time,
+            "quality_label": "strong",
+            "quality_reasons": ["上下沿触碰 3/3", "收盘覆盖 99%"],
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(
+                root,
+                consolidation_breakout_timeframes=("4h",),
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+                consolidation_daily_product_enable=True,
+                consolidation_daily_shadow_mode=False,
+                consolidation_daily_boundary_events_enable=True,
+            )
+            store = JsonStore(root)
+            daily_tracks = {
+                "TESTUSDT|1d|short": {
+                    "box": None,
+                    "last_close_time": target_close_time,
+                },
+                "TESTUSDT|1d|medium": {
+                    "box": None,
+                    "last_close_time": target_close_time,
+                },
+                "TESTUSDT|1d|long": {
+                    "box": daily_box,
+                    "last_close_time": target_close_time,
+                },
+                "TESTUSDT|1d|observation": {
+                    "last_close_time": target_close_time,
+                    "observation": {
+                        "symbol": "TESTUSDT",
+                        "target_close_time": target_close_time,
+                        "status": "success",
+                        "structures": [],
+                        "gate_failures": [],
+                    },
+                },
+            }
+            store.save(settings.consolidation_daily_state_path, {
+                "schema_version": 1,
+                "detector_profile": "daily_adaptive.v1",
+                "tracks": daily_tracks,
+            })
+            source = IntervalSource(
+                ["TESTUSDT"],
+                {
+                    ("TESTUSDT", "4h"): trigger_rows,
+                    ("TESTUSDT", "1d"): daily_rows,
+                },
+            )
+            result = ConsolidationBreakoutRadar(settings, store).build(
+                source,
+                now_ms=trigger_close_time + 90_000,
+            )  # type: ignore[arg-type]
+
+        event = next(
+            event
+            for event in result["events"]
+            if event["structure_timeframe"] == "1d"
+            and event["trigger_timeframe"] == "4h"
+        )
+        payload = result["chart_payloads"][event["event_id"]]
+        self.assertEqual(
+            {(interval, limit) for _symbol, interval, limit in source.calls},
+            {("4h", 264), ("1d", 620)},
+        )
+        self.assertGreater(len(payload["candles"]), 264)
+        self.assertLessEqual(
+            int(payload["candles"][0]["close_time"]),
+            box_start_close_time,
+        )
+        self.assertEqual(payload["structure_timeframe"], "1d")
+        self.assertEqual(payload["trigger_timeframe"], "4h")
+        self.assertEqual(
+            payload["trigger_marker"]["close_time"],
+            trigger_close_time,
+        )
+        png = render_consolidation_chart_png(event=event, chart_payload=payload)
+        self.assertTrue(png.startswith(PNG_SIGNATURE))
+
+    def test_live_daily_product_owns_1d_event_and_builds_long_chart(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = utc_daily_rows_with_breakout()
+            settings = settings_for(
+                root,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+                consolidation_daily_product_enable=True,
+                consolidation_daily_shadow_mode=False,
+                consolidation_daily_boundary_events_enable=True,
+                consolidation_daily_history_bars=620,
+            )
+            store = JsonStore(root)
+            radar = ConsolidationBreakoutRadar(settings, store)
+            result = radar.build(
+                UniverseSource(["TESTUSDT"], {"TESTUSDT": rows}),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+
+            self.assertEqual(len(result["events"]), 1)
+            event = result["events"][0]
+            self.assertEqual(event["detector_profile"], "daily_adaptive.v1")
+            self.assertEqual(event["horizon"], "long")
+            self.assertEqual(event["box_base_bars"], 500)
+            self.assertEqual(event["structure_timeframe"], "1d")
+            self.assertEqual(event["trigger_timeframe"], "1d")
+            self.assertNotIn("score", event)
+            self.assertNotIn("/100", event["text"])
+            self.assertGreater(
+                len(result["chart_payloads"][event["event_id"]]["candles"]),
+                264,
+            )
+            daily_diag = result["diagnostics"]["daily_product"]
+            self.assertEqual(daily_diag["event_count"], 1)
+            self.assertGreater(daily_diag["legacy_daily_events_suppressed"], 0)
+            self.assertNotIn("TESTUSDT", daily_diag["detector_summary"])
+            self.assertLess(len(json.dumps(daily_diag)), 12_000)
+
+            deferred = radar.commit(result, [])
+            self.assertEqual(deferred["daily_deferred"], 1)
+            retry_source = UniverseSource(
+                ["TESTUSDT"],
+                {"TESTUSDT": rows},
+            )
+            retry_result = radar.build(
+                retry_source,
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+            self.assertEqual(
+                {interval for _symbol, interval, _limit in retry_source.calls},
+                {"1d", "4h"},
+            )
+            self.assertIn(
+                event["event_id"],
+                {retry_event["event_id"] for retry_event in retry_result["events"]},
+            )
+            committed = radar.commit(result, [event["event_id"]])
+            self.assertGreaterEqual(committed["daily_applied"], 3)
+            daily_state = store.load(settings.consolidation_daily_state_path, {})
+            cached_source = UniverseSource(
+                ["TESTUSDT"],
+                {"TESTUSDT": rows},
+            )
+            cached_radar = ConsolidationBreakoutRadar(
+                replace(
+                    settings,
+                    consolidation_daily_boundary_events_enable=False,
+                ),
+                store,
+            )
+            cached_result = cached_radar.build(
+                cached_source,
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+
+        self.assertEqual(daily_state["detector_profile"], "daily_adaptive.v1")
+        self.assertIn("TESTUSDT|1d|long", daily_state["tracks"])
+        self.assertEqual(cached_source.calls, [])
+        self.assertEqual(
+            cached_result["diagnostics"]["daily_product"]["cached_pair_count"],
+            1,
+        )
+        self.assertEqual(
+            cached_result["daily_digest_batch"]["observations"][0]["status"],
+            "success",
+        )
+
+    def test_shadow_daily_product_keeps_legacy_sender_and_emits_digest_batch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = utc_daily_rows_with_breakout()
+            settings = settings_for(
+                root,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+                consolidation_daily_product_enable=True,
+                consolidation_daily_shadow_mode=True,
+                consolidation_daily_boundary_events_enable=True,
+                consolidation_daily_history_bars=620,
+            )
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(
+                UniverseSource(["TESTUSDT"], {"TESTUSDT": rows}),
+                now_ms=closed_now(rows),
+            )  # type: ignore[arg-type]
+
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["detector_profile"], "legacy_fixed.v1")
+        daily_diag = result["diagnostics"]["daily_product"]
+        self.assertEqual(daily_diag["shadow_event_count"], 1)
+        self.assertEqual(daily_diag["legacy_daily_events_suppressed"], 0)
+        batch = result["daily_digest_batch"]
+        self.assertEqual(batch["target_close_time"], int(rows[-1][6]))
+        self.assertEqual(batch["expected_symbols"], ["TESTUSDT"])
+        self.assertEqual(len(batch["observations"]), 1)
+        observation = batch["observations"][0]
+        self.assertEqual(observation["status"], "success")
+        self.assertTrue(observation["structures"])
+        self.assertTrue(all(
+            structure["structure_quality"] in {"strong", "standard", "watch"}
+            for structure in observation["structures"]
+        ))
 
     def test_zero_volume_floor_does_not_depend_on_ticker_snapshot(self) -> None:
         class MissingTickerSource(UniverseSource):
@@ -606,6 +1502,9 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
             event = result["events"][0]
             self.assertEqual(event["event"], "breakout_up")
             self.assertEqual(event["horizon"], "long")
+            self.assertEqual(event["structure_timeframe"], "1d")
+            self.assertEqual(event["trigger_timeframe"], "1d")
+            self.assertEqual(event["trigger_kind"], "closed_candle")
             self.assertGreaterEqual(event["box_age"], 240)
             self.assertAlmostEqual(event["box_upper"], 103.0)
             self.assertAlmostEqual(event["box_lower"], 97.0)
@@ -616,6 +1515,11 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
                 "signed_directional_edge_pct",
             )
             self.assertIn("长期箱体", event["text"])
+            self.assertIn("结构周期 1D", event["text"])
+            self.assertIn("触发周期 1D", event["text"])
+            self.assertIn("结构质量", event["text"])
+            self.assertNotIn("评分", event["text"])
+            self.assertNotIn("/100", event["text"])
             self.assertIn("未来3根K线", event["text"])
             self.assertGreaterEqual(result["diagnostics"]["suppressed_horizon_events"], 2)
             self.assertEqual(set(result["chart_payloads"]), {event["event_id"]})
