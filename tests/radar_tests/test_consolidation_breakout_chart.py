@@ -191,6 +191,36 @@ class ConsolidationBreakoutChartTests(unittest.TestCase):
         self.assertTrue(rendered.startswith(PNG_SIGNATURE))
         self.assertNotEqual(rendered, changed)
 
+    def test_1h_structure_chart_accepts_15m_proximity_marker(self) -> None:
+        payload = sample_payload(260, interval_ms=60 * 60 * 1000)
+        event = range_event(payload, close_index=259, timeframe="15m")
+        event.update({
+            "event": "proximity_upper",
+            "structure_timeframe": "1h",
+            "trigger_timeframe": "15m",
+            "close_time": int(event["close_time"]) + 15 * 60 * 1000,
+            "close": 108.3,
+        })
+        candles = payload["candles"]
+        assert isinstance(candles, list)
+        payload.update({
+            "box_start_close_time": candles[19]["close_time"],
+            "structure_timeframe": "1h",
+            "trigger_timeframe": "15m",
+            "trigger_marker": {
+                "close_time": event["close_time"],
+                "price": event["close"],
+            },
+        })
+
+        rendered = render_consolidation_chart_png(
+            event=event,
+            chart_payload=payload,
+        )
+
+        self.assertTrue(rendered.startswith(PNG_SIGNATURE))
+        self.assertLess(len(rendered), 10 * 1024 * 1024)
+
     def test_range_chart_is_deterministic_and_telegram_safe(self) -> None:
         payload = sample_payload()
         event = range_event(payload)

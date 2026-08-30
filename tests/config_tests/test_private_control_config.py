@@ -121,6 +121,10 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
         self.assertFalse(status["CONSOLIDATION_BREAKOUT_ENABLE"])
         self.assertFalse(status["CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE"])
+        self.assertFalse(status["CONSOLIDATION_HOURLY_PROXIMITY_ENABLE"])
+        self.assertTrue(
+            status["CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE"]
+        )
         self.assertFalse(status["CONSOLIDATION_DAILY_PRODUCT_ENABLE"])
         self.assertTrue(status["CONSOLIDATION_DAILY_SHADOW_MODE"])
         self.assertFalse(status["CONSOLIDATION_DAILY_DIGEST_ENABLE"])
@@ -242,6 +246,8 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "ANNOUNCEMENT_RISK_ENABLE",
             "CONSOLIDATION_BREAKOUT_ENABLE",
             "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE",
             "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
             "CONSOLIDATION_DAILY_SHADOW_MODE",
             "CONSOLIDATION_DAILY_DIGEST_ENABLE",
@@ -273,6 +279,20 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "CONSOLIDATION_DAILY_MAX_WAIT_SEC",
             "CONSOLIDATION_DAILY_STATE_FILE",
             "CONSOLIDATION_DAILY_DIGEST_STATE_FILE",
+        ):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                ConfigManagerError,
+                "not allowlisted",
+            ):
+                self.manager.set(key, "1")
+
+    def test_hourly_proximity_tuning_and_state_path_are_not_runtime_allowlisted(self) -> None:
+        for key in (
+            "CONSOLIDATION_HOURLY_PROXIMITY_DISCOVERY_LIMIT",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MONITOR_LIMIT",
+            "CONSOLIDATION_HOURLY_PROXIMITY_KLINE_BUDGET",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MAX_SIGNALS_PER_SCAN",
+            "CONSOLIDATION_HOURLY_PROXIMITY_STATE_FILE",
         ):
             with self.subTest(key=key), self.assertRaisesRegex(
                 ConfigManagerError,

@@ -63,6 +63,45 @@ def _runtime_check(settings: Settings, store: JsonStore, now: int) -> dict[str, 
             max_age_sec=max_age,
             runtime_state=state,
         )
+    hourly_enabled = bool(
+        settings.consolidation_breakout_enable
+        and settings.consolidation_hourly_proximity_enable
+        and not bool(payload.get("no_consolidation_breakout"))
+    )
+    diagnostics = payload.get("diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    consolidation = diagnostics.get("consolidation_breakout")
+    consolidation = (
+        consolidation if isinstance(consolidation, dict) else {}
+    )
+    hourly = consolidation.get("hourly_proximity")
+    hourly = hourly if isinstance(hourly, dict) else {}
+    hourly_status = str(hourly.get("status") or "").strip().lower()
+    hourly_scan = hourly.get("scan")
+    hourly_scan = hourly_scan if isinstance(hourly_scan, dict) else {}
+    hourly_scan_status = str(
+        hourly_scan.get("status") or ""
+    ).strip().lower()
+    try:
+        hourly_state_exists = (
+            settings.consolidation_hourly_proximity_state_path.is_file()
+        )
+    except OSError:
+        hourly_state_exists = False
+    if hourly_enabled and hourly_status in {
+        "scan_failed",
+        "shadow_commit_failed",
+        "commit_failed",
+    }:
+        return _check(
+            "runtime_status",
+            "fail",
+            f"1H箱体临界预警子模块失败：{hourly_status}",
+            age_sec=age,
+            runtime_state=state,
+            hourly_proximity_status=hourly_status,
+            hourly_proximity_state_file_exists=hourly_state_exists,
+        )
     if state.endswith("_failed"):
         return _check(
             "runtime_status",
@@ -70,6 +109,31 @@ def _runtime_check(settings: Settings, store: JsonStore, now: int) -> dict[str, 
             f"主循环报告失败状态：{state}",
             age_sec=age,
             runtime_state=state,
+        )
+    if hourly_enabled and hourly_scan_status == "degraded":
+        return _check(
+            "runtime_status",
+            "warn",
+            "1H箱体临界预警扫描降级，请检查子诊断 errors",
+            age_sec=age,
+            runtime_state=state,
+            hourly_proximity_status=hourly_status or "unknown",
+            hourly_proximity_scan_status=hourly_scan_status,
+            hourly_proximity_state_file_exists=hourly_state_exists,
+        )
+    if (
+        hourly_enabled
+        and hourly_status in {"shadow_idle", "shadow_observed", "live"}
+        and not hourly_state_exists
+    ):
+        return _check(
+            "runtime_status",
+            "warn",
+            "1H箱体临界预警已运行但独立状态文件尚未生成",
+            age_sec=age,
+            runtime_state=state,
+            hourly_proximity_status=hourly_status,
+            hourly_proximity_state_file_exists=False,
         )
     return _check(
         "runtime_status",

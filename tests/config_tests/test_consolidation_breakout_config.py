@@ -27,6 +27,28 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             settings.consolidation_breakout_state_path.parent,
             Path(tmp),
         )
+        self.assertFalse(settings.consolidation_hourly_proximity_enable)
+        self.assertTrue(settings.consolidation_hourly_proximity_shadow_mode)
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_discovery_limit,
+            20,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_monitor_limit,
+            20,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_kline_budget,
+            60,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_max_signals_per_scan,
+            4,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_state_path,
+            Path(tmp) / "consolidation_hourly_proximity_state.json",
+        )
         self.assertFalse(settings.consolidation_daily_product_enable)
         self.assertTrue(settings.consolidation_daily_shadow_mode)
         self.assertFalse(settings.consolidation_daily_digest_enable)
@@ -58,6 +80,13 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             "CONSOLIDATION_BREAKOUT_SCAN_LIMIT": "12",
             "CONSOLIDATION_BREAKOUT_REQUIRE_STRONG_VOLUME": "true",
             "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "true",
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE": "true",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE": "false",
+            "CONSOLIDATION_HOURLY_PROXIMITY_DISCOVERY_LIMIT": "12",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MONITOR_LIMIT": "9",
+            "CONSOLIDATION_HOURLY_PROXIMITY_KLINE_BUDGET": "48",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MAX_SIGNALS_PER_SCAN": "3",
+            "CONSOLIDATION_HOURLY_PROXIMITY_STATE_FILE": "hourly-proximity.json",
             "CONSOLIDATION_DAILY_PRODUCT_ENABLE": "true",
             "CONSOLIDATION_DAILY_SHADOW_MODE": "false",
             "CONSOLIDATION_DAILY_DIGEST_ENABLE": "true",
@@ -86,6 +115,28 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             settings.consolidation_breakout_require_strong_volume
         )
         self.assertTrue(settings.consolidation_breakout_three_push_enable)
+        self.assertTrue(settings.consolidation_hourly_proximity_enable)
+        self.assertFalse(settings.consolidation_hourly_proximity_shadow_mode)
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_discovery_limit,
+            12,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_monitor_limit,
+            9,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_kline_budget,
+            48,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_max_signals_per_scan,
+            3,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_state_path.name,
+            "hourly-proximity.json",
+        )
         self.assertTrue(settings.consolidation_daily_product_enable)
         self.assertFalse(settings.consolidation_daily_shadow_mode)
         self.assertTrue(settings.consolidation_daily_digest_enable)
@@ -129,6 +180,21 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
                 ),
             },
         )
+        hourly = status["consolidation_breakout"]["hourly_proximity"]
+        self.assertEqual(
+            hourly,
+            {
+                "enabled": True,
+                "shadow_mode": False,
+                "discovery_limit": 12,
+                "monitor_limit": 9,
+                "kline_budget": 48,
+                "max_signals_per_scan": 3,
+                "state_file": str(
+                    settings.consolidation_hourly_proximity_state_path
+                ),
+            },
+        )
 
     def test_daily_boolean_controls_reload_from_file_values(self) -> None:
         stale_environment = {
@@ -156,6 +222,24 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
             settings.consolidation_daily_boundary_events_enable
         )
 
+    def test_hourly_proximity_boolean_controls_reload_from_file_values(self) -> None:
+        stale_environment = {
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE": "false",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE": "true",
+        }
+        current_file = {
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE": "true",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE": "false",
+        }
+        with patch.dict(os.environ, stale_environment, clear=True), patch(
+            "config.settings.load_env_file",
+            return_value=current_file,
+        ):
+            settings = Settings.load()
+
+        self.assertTrue(settings.consolidation_hourly_proximity_enable)
+        self.assertFalse(settings.consolidation_hourly_proximity_shadow_mode)
+
     def test_daily_numeric_controls_fall_back_when_out_of_bounds(self) -> None:
         values = {
             "CONSOLIDATION_DAILY_HISTORY_BARS": "619",
@@ -174,6 +258,36 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
         self.assertEqual(settings.consolidation_daily_retry_rounds, 2)
         self.assertEqual(settings.consolidation_daily_max_wait_sec, 10800)
 
+    def test_hourly_proximity_numeric_controls_fall_back_when_out_of_bounds(self) -> None:
+        values = {
+            "CONSOLIDATION_HOURLY_PROXIMITY_DISCOVERY_LIMIT": "0",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MONITOR_LIMIT": "41",
+            "CONSOLIDATION_HOURLY_PROXIMITY_KLINE_BUDGET": "121",
+            "CONSOLIDATION_HOURLY_PROXIMITY_MAX_SIGNALS_PER_SCAN": "9",
+        }
+        with patch.dict(os.environ, values, clear=True), patch(
+            "config.settings.load_env_file",
+            return_value=values,
+        ):
+            settings = Settings.load()
+
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_discovery_limit,
+            20,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_monitor_limit,
+            20,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_kline_budget,
+            60,
+        )
+        self.assertEqual(
+            settings.consolidation_hourly_proximity_max_signals_per_scan,
+            4,
+        )
+
     def test_example_keeps_daily_product_disabled_and_shadowed(self) -> None:
         example_path = (
             Path(__file__).resolve().parents[2] / "config" / ".env.oi.example"
@@ -190,6 +304,14 @@ class ConsolidationBreakoutConfigTests(unittest.TestCase):
         self.assertEqual(
             values["CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE"],
             "false",
+        )
+        self.assertEqual(
+            values["CONSOLIDATION_HOURLY_PROXIMITY_ENABLE"],
+            "false",
+        )
+        self.assertEqual(
+            values["CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE"],
+            "true",
         )
         self.assertNotEqual(
             values["CONSOLIDATION_DAILY_STATE_FILE"],

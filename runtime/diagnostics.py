@@ -91,6 +91,22 @@ def _safe_error_code(value: object) -> str:
     ) else ""
 
 
+def _safe_hourly_proximity_status(value: object) -> str:
+    status = str(value or "").strip().lower()
+    return status if status in {
+        "disabled",
+        "idle",
+        "scan_failed",
+        "shadow_idle",
+        "shadow_observed",
+        "shadow_commit_failed",
+        "live",
+        "commit_failed",
+        "ok",
+        "degraded",
+    } else "unknown"
+
+
 def _radar_state(
     *,
     enabled: bool,
@@ -233,6 +249,32 @@ def build_market_radar_runtime_status(
     consolidation_diagnostics = _as_mapping(
         runtime_diagnostics.get("consolidation_breakout")
     )
+    hourly_diagnostics = _as_mapping(
+        consolidation_diagnostics.get("hourly_proximity")
+    )
+    hourly_scan = _as_mapping(hourly_diagnostics.get("scan"))
+    hourly_status = _safe_hourly_proximity_status(
+        hourly_diagnostics.get("status")
+    )
+    hourly_scan_status = _safe_hourly_proximity_status(
+        hourly_scan.get("status")
+    )
+    hourly_hard_failure = hourly_status in {
+        "scan_failed",
+        "shadow_commit_failed",
+        "commit_failed",
+    }
+    hourly_state_path = settings.consolidation_hourly_proximity_state_path
+    try:
+        hourly_state_exists = hourly_state_path.is_file()
+    except OSError:
+        hourly_state_exists = False
+    try:
+        hourly_state = _as_mapping(store.load(hourly_state_path, {}))
+    except (OSError, TypeError, ValueError):
+        hourly_state = {}
+    hourly_tracks = _as_mapping(hourly_state.get("tracks"))
+    hourly_rotation = _as_mapping(hourly_state.get("rotation"))
 
     radars = {
         "launch_alert": _radar_state(
@@ -411,6 +453,97 @@ def build_market_radar_runtime_status(
             schedule_grace_sec=schedule_grace_sec,
         ),
     }
+    consolidation_radar = radars["consolidation_breakout"]
+    hourly_config_enabled = bool(
+        settings.consolidation_hourly_proximity_enable
+    )
+    hourly_effective_enabled = bool(
+        settings.consolidation_breakout_enable
+        and hourly_config_enabled
+        and not bool(runtime.get("no_consolidation_breakout"))
+    )
+    if not hourly_config_enabled:
+        hourly_state_name = "disabled"
+        hourly_state_reason = "disabled_by_config"
+    elif not settings.consolidation_breakout_enable:
+        hourly_state_name = "disabled"
+        hourly_state_reason = "parent_radar_disabled"
+    elif bool(runtime.get("no_consolidation_breakout")):
+        hourly_state_name = "disabled"
+        hourly_state_reason = "parent_disabled_by_runtime_flag"
+    elif not runtime_active:
+        hourly_state_name = "not_running"
+        hourly_state_reason = "main_bot_runtime_not_active"
+    elif hourly_hard_failure:
+        hourly_state_name = "degraded"
+        hourly_state_reason = hourly_status
+    elif not runtime.get("last_consolidation_breakout_at"):
+        hourly_state_name = "waiting_first_cycle"
+        hourly_state_reason = "scheduled_not_run_yet"
+    elif hourly_status == "unknown":
+        hourly_state_name = "waiting_first_cycle"
+        hourly_state_reason = "diagnostics_not_observed"
+    else:
+        hourly_state_name = "running"
+        hourly_state_reason = "last_cycle_completed"
+    consolidation_radar["hourly_proximity"] = {
+        "enabled": hourly_effective_enabled,
+        "configured_enabled": hourly_config_enabled,
+        "shadow_mode": bool(
+            settings.consolidation_hourly_proximity_shadow_mode
+        ),
+        "state": hourly_state_name,
+        "state_reason": hourly_state_reason,
+        "reported_status": hourly_status,
+        "scan_status": hourly_scan_status,
+        "delivery_status": _safe_push_status(
+            hourly_diagnostics.get("delivery_status")
+        ),
+        "state_file": str(hourly_state_path),
+        "state_file_exists": hourly_state_exists,
+        "state_updated_at": _timestamp_text(
+            hourly_state.get("updated_at")
+        ),
+        "state_track_count": len(hourly_tracks),
+        "rotation_round": _nonnegative_int(
+            hourly_rotation.get("round")
+        ),
+        "rotation_after_symbol_configured": bool(
+            str(hourly_rotation.get("after_symbol") or "").strip()
+        ),
+        "candidate_count": _nonnegative_int(
+            hourly_scan.get("candidate_count")
+        ),
+        "discovery_batch_count": _nonnegative_int(
+            hourly_scan.get("discovery_batch_count")
+        ),
+        "active_box_symbol_count": _nonnegative_int(
+            hourly_scan.get("active_box_symbol_count")
+        ),
+        "fast_monitor_count": _nonnegative_int(
+            hourly_scan.get("fast_monitor_count")
+        ),
+        "event_count": _nonnegative_int(hourly_scan.get("event_count")),
+        "confluence_event_count": _nonnegative_int(
+            hourly_scan.get("confluence_event_count")
+        ),
+        "skipped_closed_15m_bar_count": _nonnegative_int(
+            hourly_scan.get("skipped_closed_15m_bar_count")
+        ),
+        "p95_decision_latency_sec": _nonnegative_int(
+            hourly_scan.get("p95_decision_latency_sec")
+        ),
+        "max_decision_latency_sec": _nonnegative_int(
+            hourly_scan.get("max_decision_latency_sec")
+        ),
+    }
+    if hourly_effective_enabled and hourly_hard_failure:
+        consolidation_radar.update({
+            "state": "degraded",
+            "state_reason": f"hourly_proximity_{hourly_status}",
+            "last_cycle_status": "failed",
+            "last_error_code": f"hourly_proximity_{hourly_status}",
+        })
     if not runtime:
         overall_status = "not_initialized"
         overall_reason = "runtime_status_missing"
