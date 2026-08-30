@@ -40,6 +40,8 @@ EVENT_LABELS = {
     "fake_breakdown": "FAKE BRK DOWN",
     "upper_sweep": "SWEEP H",
     "lower_sweep": "SWEEP L",
+    "proximity_upper": "NEAR 1H UPPER",
+    "proximity_lower": "NEAR 1H LOWER",
     "three_push_top_forming": "3 PUSH TOP FORMING",
     "three_push_bottom_forming": "3 PUSH BOTTOM FORMING",
     "three_push_top_confirmed": "3 PUSH TOP CONFIRMED",
@@ -148,7 +150,12 @@ def _dotted_vertical(
 
 
 def _event_color(event_name: str, direction: str) -> tuple[int, int, int]:
-    if event_name in {"upper_sweep", "lower_sweep"}:
+    if event_name in {
+        "upper_sweep",
+        "lower_sweep",
+        "proximity_upper",
+        "proximity_lower",
+    }:
         return ANNOTATION_COLORS["event_neutral"]
     if direction == "up" or event_name.endswith("bottom_confirmed"):
         return ANNOTATION_COLORS["event_up"]

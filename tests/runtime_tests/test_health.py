@@ -67,6 +67,138 @@ class RuntimeHealthTests(unittest.TestCase):
         realtime = next(item for item in checks if item["name"] == "realtime_features_freshness")
         self.assertEqual(realtime["status"], "ok")
 
+    def test_hourly_proximity_hard_failure_is_blocking_health(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.runtime_status_path, {
+                "status": "running",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "hourly_proximity": {
+                            "status": "scan_failed",
+                            "error_code": "private body must not leak",
+                        },
+                    },
+                },
+            })
+            os.utime(settings.runtime_status_path, (now - 30, now - 30))
+            self.seed_databases(settings, now)
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        runtime = next(
+            item for item in checks if item["name"] == "runtime_status"
+        )
+        self.assertEqual(runtime["status"], "fail")
+        self.assertIn("scan_failed", runtime["detail"])
+        self.assertFalse(
+            runtime["metrics"]["hourly_proximity_state_file_exists"]
+        )
+        self.assertNotIn("private body", json.dumps(runtime))
+
+    def test_hourly_proximity_degraded_scan_is_health_warning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.runtime_status_path, {
+                "status": "running",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "hourly_proximity": {
+                            "status": "shadow_idle",
+                            "scan": {"status": "degraded"},
+                        },
+                    },
+                },
+            })
+            os.utime(settings.runtime_status_path, (now - 30, now - 30))
+            self.seed_databases(settings, now)
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        runtime = next(
+            item for item in checks if item["name"] == "runtime_status"
+        )
+        self.assertEqual(runtime["status"], "warn")
+        self.assertEqual(
+            runtime["metrics"]["hourly_proximity_scan_status"],
+            "degraded",
+        )
+
+    def test_runtime_disabled_parent_ignores_stale_hourly_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.runtime_status_path, {
+                "status": "running",
+                "no_consolidation_breakout": True,
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "hourly_proximity": {"status": "scan_failed"},
+                    },
+                },
+            })
+            os.utime(settings.runtime_status_path, (now - 30, now - 30))
+            self.seed_databases(settings, now)
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        runtime = next(
+            item for item in checks if item["name"] == "runtime_status"
+        )
+        self.assertEqual(runtime["status"], "ok")
+
+    def test_hourly_warning_does_not_mask_parent_runtime_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 10_000
+            settings = replace(
+                self.make_settings(root),
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+            )
+            store = JsonStore(root)
+            store.save(settings.runtime_status_path, {
+                "status": "consolidation_breakout_failed",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "hourly_proximity": {
+                            "status": "shadow_idle",
+                            "scan": {"status": "degraded"},
+                        },
+                    },
+                },
+            })
+            os.utime(settings.runtime_status_path, (now - 30, now - 30))
+            self.seed_databases(settings, now)
+
+            checks = runtime_health_checks(settings, store, now_ts=now)
+
+        runtime = next(
+            item for item in checks if item["name"] == "runtime_status"
+        )
+        self.assertEqual(runtime["status"], "fail")
+        self.assertIn("consolidation_breakout_failed", runtime["detail"])
+
     def test_stale_runtime_and_exchange_data_are_blocking(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

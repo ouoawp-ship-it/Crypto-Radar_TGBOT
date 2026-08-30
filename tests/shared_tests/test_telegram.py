@@ -1453,11 +1453,18 @@ class TelegramGatewayTests(unittest.TestCase):
                 "缺少跨周期图表上下文时只按受限预算补取1D历史",
                 "不参与信号判断、质量标签、排序或去重",
                 "新版本默认产品关闭且影子模式开启",
+                "1H箱体临界预警",
+                "以15m优先、1H兜底",
+                "临近不是突破确认",
+                "退回边界至少0.60 ATR并连续保持两根1H",
+                "4H / 1D / 1W共振只比较同方向冻结边界",
+                "1H STRUCT / 15m TRIGGER",
+                "1H临界预警：关；影子模式：开",
             ):
                 self.assertIn(phrase, intro)
             self.assertEqual(
                 topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-08-30-consolidation-breakout-v6",
+                "2026-08-30-consolidation-breakout-v7",
             )
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

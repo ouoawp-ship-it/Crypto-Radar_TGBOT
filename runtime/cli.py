@@ -36,6 +36,9 @@ from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
 from radars.consolidation_breakout.radar import ConsolidationBreakoutRadar
+from radars.consolidation_breakout.hourly_proximity import (
+    ConsolidationHourlyProximityRadar,
+)
 from radars.consolidation_breakout.daily_digest import (
     ConsolidationDailyDigestAccumulator,
     empty_daily_digest_state,
@@ -492,6 +495,7 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.funding_snapshot_path,
         settings.funding_alert_state_path,
         settings.consolidation_breakout_state_path,
+        settings.consolidation_hourly_proximity_state_path,
         settings.announcement_state_path,
         settings.data_dir / "simple_alert_state.json",
         settings.data_dir / "review_signals.json",
@@ -1298,7 +1302,8 @@ def run_consolidation_breakout(args: argparse.Namespace) -> int:
         args,
     )
     print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
-    return 1 if push_status in {"failed", "partial"} else 0
+    hourly_error = _consolidation_hourly_proximity_error_code(diagnostics)
+    return 1 if push_status in {"failed", "partial"} or hourly_error else 0
 
 
 def _consolidation_chart_photo(
@@ -1518,6 +1523,296 @@ def _process_consolidation_daily_digest(
         return "failed", diagnostics
 
 
+def _consolidation_event_key(
+    event: Mapping[str, Any],
+) -> tuple[str, int] | None:
+    symbol = str(event.get("symbol") or "").strip().upper()
+    try:
+        close_time = int(
+            event.get("close_time") or event.get("event_time") or 0
+        )
+    except (TypeError, ValueError, OverflowError):
+        close_time = 0
+    if not symbol or close_time <= 0:
+        return None
+    return symbol, close_time
+
+
+def _consolidation_hourly_proximity_error_code(
+    diagnostics: Mapping[str, object],
+) -> str:
+    raw = diagnostics.get("hourly_proximity")
+    hourly = raw if isinstance(raw, Mapping) else {}
+    status = str(hourly.get("status") or "").strip().lower()
+    if status not in {
+        "scan_failed",
+        "shadow_commit_failed",
+        "commit_failed",
+    }:
+        return ""
+    return f"hourly_proximity_{status}"
+
+
+def _process_consolidation_hourly_proximity(
+    settings: Settings,
+    store: JsonStore,
+    gateway: TelegramGateway,
+    args: argparse.Namespace,
+    base_events: object,
+    base_delivery_pending: bool,
+    base_events_withheld: bool,
+) -> tuple[str | None, dict[str, object]]:
+    enabled = bool(getattr(
+        settings,
+        "consolidation_hourly_proximity_enable",
+        False,
+    ))
+    shadow_mode = bool(getattr(
+        settings,
+        "consolidation_hourly_proximity_shadow_mode",
+        True,
+    ))
+    diagnostics: dict[str, object] = {
+        "status": "disabled" if not enabled else "idle",
+        "enabled": enabled,
+        "shadow_mode": shadow_mode,
+        "events": 0,
+        "accepted": 0,
+        "suppressed_by_structure": 0,
+        "pushes": [],
+    }
+    if not enabled:
+        return None, diagnostics
+
+    try:
+        radar = ConsolidationHourlyProximityRadar(settings, store)
+        with BinanceDataSource(
+            settings,
+            kline_budget=int(getattr(
+                settings,
+                "consolidation_hourly_proximity_kline_budget",
+                60,
+            )),
+        ) as source:
+            result = radar.build(source)
+    except Exception as exc:
+        diagnostics.update({
+            "status": "scan_failed",
+            "error_code": type(exc).__name__,
+        })
+        return None, diagnostics
+
+    raw_scan_diagnostics = result.get("diagnostics")
+    if isinstance(raw_scan_diagnostics, Mapping):
+        diagnostics["scan"] = dict(raw_scan_diagnostics)
+    raw_events = result.get("events")
+    events = (
+        [event for event in raw_events if isinstance(event, Mapping)]
+        if isinstance(raw_events, (list, tuple))
+        else []
+    )
+    diagnostics["events"] = len(events)
+
+    if shadow_mode:
+        accepted_event_ids = {
+            str(event.get("event_id") or "")
+            for event in events
+            if str(event.get("event_id") or "")
+        }
+        try:
+            committed = radar.commit(result, accepted_event_ids)
+        except Exception as exc:
+            diagnostics.update({
+                "status": "shadow_commit_failed",
+                "error_code": type(exc).__name__,
+                "accepted": len(accepted_event_ids),
+            })
+            return "failed", diagnostics
+        else:
+            diagnostics.update({
+                "status": (
+                    "shadow_observed" if events else "shadow_idle"
+                ),
+                "accepted": len(accepted_event_ids),
+                "state_updates_committed": committed,
+            })
+        return None, diagnostics
+
+    base_event_list = [
+        event
+        for event in (
+            base_events if isinstance(base_events, (list, tuple)) else []
+        )
+        if isinstance(event, Mapping)
+    ]
+    base_event_keys = {
+        key
+        for event in base_event_list
+        for key in [_consolidation_event_key(event)]
+        if key is not None
+    }
+    configured_base_max = max(0, int(getattr(
+        settings,
+        "consolidation_breakout_max_signals_per_scan",
+        8,
+    )))
+    base_capacity_saturated = bool(base_events_withheld) or (
+        configured_base_max > 0
+        and len(base_event_list) >= configured_base_max
+    )
+    diagnostics["base_events_withheld"] = bool(base_events_withheld)
+    diagnostics["base_capacity_saturated"] = base_capacity_saturated
+    raw_chart_payloads = result.get("chart_payloads")
+    chart_payloads = (
+        raw_chart_payloads
+        if isinstance(raw_chart_payloads, Mapping)
+        else {}
+    )
+    accepted_event_ids: set[str] = set()
+    push_results: list[dict[str, object]] = []
+    for index, event in enumerate(events, start=1):
+        event_id = str(event.get("event_id") or "")
+        event_key = _consolidation_event_key(event)
+        if base_delivery_pending:
+            push_results.append({
+                "event_id": event_id,
+                "status": "deferred",
+                "reason": "base_structure_delivery_pending",
+                "chart_status": "not_rendered",
+            })
+            continue
+        if base_capacity_saturated:
+            push_results.append({
+                "event_id": event_id,
+                "status": "deferred",
+                "reason": "base_structure_capacity_saturated",
+                "chart_status": "not_rendered",
+            })
+            continue
+        if event_key is not None and event_key in base_event_keys:
+            if event_id:
+                accepted_event_ids.add(event_id)
+            push_results.append({
+                "event_id": event_id,
+                "status": "suppressed",
+                "reason": "base_structure_same_close",
+                "chart_status": "not_rendered",
+            })
+            continue
+
+        photo, chart_status = _consolidation_chart_photo(
+            event,
+            chart_payloads.get(event_id),
+        )
+        try:
+            push = gateway.send(
+                str(event.get("text") or ""),
+                str(
+                    result.get("template_id")
+                    or "TG_CONSOLIDATION_BREAKOUT"
+                ),
+                str(event.get("dedup_key") or event_id),
+                send=args.send,
+                confirm_real_send=args.confirm_real_send,
+                cooldown_sec=7 * 86400,
+                parse_mode="HTML",
+                signal_records=[event],
+                photo=photo,
+                enrich_market_context=False,
+            )
+        except Exception as exc:
+            push_results.append({
+                "event_id": event_id,
+                "status": "failed",
+                "reason": type(exc).__name__,
+                "chart_status": chart_status,
+            })
+            continue
+        print(format_push_result_cn(
+            "1H 箱体临界预警推送",
+            push.status,
+            push.reason,
+            index=index,
+        ))
+        push_results.append({
+            "event_id": event_id,
+            "status": push.status,
+            "reason": push.reason,
+            "chart_status": chart_status,
+        })
+        if event_id and (
+            push.status == "sent"
+            or (
+                push.status == "skipped"
+                and push.reason in {"dedup_cooldown", "exact_duplicate"}
+            )
+        ):
+            accepted_event_ids.add(event_id)
+
+    commit_failed = False
+    try:
+        committed = radar.commit(result, accepted_event_ids)
+    except Exception as exc:
+        commit_failed = True
+        diagnostics.update({
+            "status": "commit_failed",
+            "error_code": type(exc).__name__,
+        })
+    else:
+        diagnostics["state_updates_committed"] = committed
+
+    delivery_statuses = {
+        str(item.get("status") or "")
+        for item in push_results
+        if item.get("status") != "suppressed"
+    }
+    if delivery_statuses & {"failed", "partial"}:
+        delivery_status = "failed"
+    elif "blocked" in delivery_statuses:
+        delivery_status = "blocked"
+    elif "sent" in delivery_statuses:
+        delivery_status = "sent"
+    elif "dry_run" in delivery_statuses:
+        delivery_status = "dry_run"
+    else:
+        delivery_status = "skipped"
+    diagnostics.update({
+        "status": (
+            diagnostics.get("status")
+            if diagnostics.get("status") == "commit_failed"
+            else "live"
+        ),
+        "delivery_status": delivery_status,
+        "accepted": len(accepted_event_ids),
+        "suppressed_by_structure": sum(
+            item.get("status") == "suppressed" for item in push_results
+        ),
+        "deferred_by_structure_capacity": sum(
+            item.get("reason") == "base_structure_capacity_saturated"
+            for item in push_results
+        ),
+        "deferred_by_structure_delivery": sum(
+            item.get("reason") == "base_structure_delivery_pending"
+            for item in push_results
+        ),
+        "charts_ready": sum(
+            item.get("chart_status") == "ready" for item in push_results
+        ),
+        "charts_delivered": sum(
+            item.get("chart_status") == "ready"
+            and item.get("status") == "sent"
+            for item in push_results
+        ),
+        "charts_text_fallback": sum(
+            item.get("status") not in {"suppressed", "deferred"}
+            and item.get("chart_status") != "ready"
+            for item in push_results
+        ),
+        "pushes": push_results,
+    })
+    return "failed" if commit_failed else delivery_status, diagnostics
+
+
 def push_consolidation_breakout(
     settings: Settings,
     store: JsonStore,
@@ -1579,8 +1874,30 @@ def push_consolidation_breakout(
             result,
         )
     )
+    raw_base_diagnostics = result.get("diagnostics")
+    raw_withheld_count = (
+        raw_base_diagnostics.get("withheld_event_count", 0)
+        if isinstance(raw_base_diagnostics, Mapping)
+        else 0
+    )
+    try:
+        base_events_withheld = int(raw_withheld_count) > 0
+    except (TypeError, ValueError, OverflowError):
+        base_events_withheld = False
+    proximity_status, proximity_diagnostics = (
+        _process_consolidation_hourly_proximity(
+            settings,
+            store,
+            gateway,
+            args,
+            result.get("events") or [],
+            len(accepted_event_ids) < len(result.get("events") or []),
+            base_events_withheld,
+        )
+    )
     diagnostics = dict(result.get("diagnostics") or {})
     diagnostics["daily_digest"] = daily_digest_diagnostics
+    diagnostics["hourly_proximity"] = proximity_diagnostics
     diagnostics["delivery"] = {
         "events": len(result.get("events") or []),
         "accepted": len(accepted_event_ids),
@@ -1601,6 +1918,8 @@ def push_consolidation_breakout(
     statuses = {str(item.get("status") or "") for item in push_results}
     if daily_digest_status:
         statuses.add(daily_digest_status)
+    if proximity_status:
+        statuses.add(proximity_status)
     if statuses & {"failed", "partial"}:
         overall = "failed"
     elif "blocked" in statuses:
@@ -1892,11 +2211,17 @@ def run_once(
         funding_alert_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
         diagnostics["funding_alert"] = funding_diag
     consolidation_push_status = "skipped"
+    consolidation_error_code = ""
     if consolidation_enabled:
         consolidation_push_status, consolidation_diag = (
             push_consolidation_breakout(settings, store, gateway, args)
         )
         diagnostics["consolidation_breakout"] = consolidation_diag
+        consolidation_error_code = (
+            _consolidation_hourly_proximity_error_code(
+                consolidation_diag
+            )
+        )
     if refresh_effectiveness:
         try:
             diagnostics["signal_effectiveness"] = refresh_signal_effectiveness(settings)
@@ -1956,16 +2281,23 @@ def run_once(
         runtime_details["consolidation_breakout_push"] = (
             consolidation_push_status
         )
-        runtime_details["consolidation_breakout_cycle_status"] = "ok"
-        runtime_details["consolidation_breakout_error_code"] = ""
+        runtime_details["consolidation_breakout_cycle_status"] = (
+            "failed" if consolidation_error_code else "ok"
+        )
+        runtime_details["consolidation_breakout_error_code"] = (
+            consolidation_error_code
+        )
+    runtime_status = "running" if runtime_task == "loop" else "completed"
+    if consolidation_error_code:
+        runtime_status = "consolidation_breakout_failed"
     write_runtime_status(
         settings,
         store,
         mode,
-        "running" if runtime_task == "loop" else "completed",
+        runtime_status,
         **runtime_details,
     )
-    return 0
+    return 1 if consolidation_error_code else 0
 
 
 def run_loop(args: argparse.Namespace) -> int:
@@ -2330,6 +2662,14 @@ def run_loop(args: argparse.Namespace) -> int:
                     gateway,
                     args,
                 )
+                hourly_error = (
+                    _consolidation_hourly_proximity_error_code(
+                        consolidation_diag
+                    )
+                )
+                if hourly_error:
+                    consolidation_ok = False
+                    consolidation_error_code = hourly_error
                 print(json.dumps(
                     {"consolidation_breakout": consolidation_diag},
                     ensure_ascii=False,

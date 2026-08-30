@@ -356,6 +356,18 @@ class Settings:
     consolidation_breakout_state_path: Path = (
         BASE_DIR / "data" / "consolidation_breakout_state.json"
     )
+    # Independent 1H-structure proximity product.  Discovery refreshes frozen
+    # hourly boxes while the hot lane watches only already-active boxes on
+    # closed 15m/1H bars.  Safe defaults keep it disabled and shadow-only.
+    consolidation_hourly_proximity_enable: bool = False
+    consolidation_hourly_proximity_shadow_mode: bool = True
+    consolidation_hourly_proximity_discovery_limit: int = 20
+    consolidation_hourly_proximity_monitor_limit: int = 20
+    consolidation_hourly_proximity_kline_budget: int = 60
+    consolidation_hourly_proximity_max_signals_per_scan: int = 4
+    consolidation_hourly_proximity_state_path: Path = (
+        BASE_DIR / "data" / "consolidation_hourly_proximity_state.json"
+    )
     # The adaptive daily product is isolated from the legacy 4H/1D/1W state
     # machine.  Shipping it disabled and in shadow mode prevents an upgrade
     # from changing Telegram traffic before an explicit production rollout.
@@ -1135,6 +1147,43 @@ class Settings:
                 "CONSOLIDATION_BREAKOUT_STATE_FILE",
                 "consolidation_breakout_state.json",
             ),
+            consolidation_hourly_proximity_enable=reloadable_bool(
+                "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE",
+                False,
+            ),
+            consolidation_hourly_proximity_shadow_mode=reloadable_bool(
+                "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE",
+                True,
+            ),
+            consolidation_hourly_proximity_discovery_limit=env_bounded_int(
+                "CONSOLIDATION_HOURLY_PROXIMITY_DISCOVERY_LIMIT",
+                20,
+                1,
+                40,
+            ),
+            consolidation_hourly_proximity_monitor_limit=env_bounded_int(
+                "CONSOLIDATION_HOURLY_PROXIMITY_MONITOR_LIMIT",
+                20,
+                1,
+                40,
+            ),
+            consolidation_hourly_proximity_kline_budget=env_bounded_int(
+                "CONSOLIDATION_HOURLY_PROXIMITY_KLINE_BUDGET",
+                60,
+                1,
+                120,
+            ),
+            consolidation_hourly_proximity_max_signals_per_scan=env_bounded_int(
+                "CONSOLIDATION_HOURLY_PROXIMITY_MAX_SIGNALS_PER_SCAN",
+                4,
+                1,
+                8,
+            ),
+            consolidation_hourly_proximity_state_path=data_path(
+                data_dir,
+                "CONSOLIDATION_HOURLY_PROXIMITY_STATE_FILE",
+                "consolidation_hourly_proximity_state.json",
+            ),
             consolidation_daily_product_enable=reloadable_bool(
                 "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
                 False,
@@ -1633,6 +1682,27 @@ class Settings:
                 ),
                 "state_file": str(self.consolidation_breakout_state_path),
                 "telegram_template": "TG_CONSOLIDATION_BREAKOUT",
+                "hourly_proximity": {
+                    "enabled": self.consolidation_hourly_proximity_enable,
+                    "shadow_mode": (
+                        self.consolidation_hourly_proximity_shadow_mode
+                    ),
+                    "discovery_limit": (
+                        self.consolidation_hourly_proximity_discovery_limit
+                    ),
+                    "monitor_limit": (
+                        self.consolidation_hourly_proximity_monitor_limit
+                    ),
+                    "kline_budget": (
+                        self.consolidation_hourly_proximity_kline_budget
+                    ),
+                    "max_signals_per_scan": (
+                        self.consolidation_hourly_proximity_max_signals_per_scan
+                    ),
+                    "state_file": str(
+                        self.consolidation_hourly_proximity_state_path
+                    ),
+                },
                 "daily_product": {
                     "enabled": self.consolidation_daily_product_enable,
                     "shadow_mode": self.consolidation_daily_shadow_mode,

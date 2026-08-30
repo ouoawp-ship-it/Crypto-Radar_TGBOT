@@ -1,4 +1,4 @@
-# 盘整突破雷达 V2.5.0
+# 盘整突破雷达
 
 这是 `Crypto-Radar_TGBOT` 内的原生 Binance K 线扫描模块，不依赖
 TradingView Webhook，也不会启动新的 Web 服务。它复用项目现有的 Telegram
@@ -8,7 +8,8 @@ TradingView Webhook，也不会启动新的 Web 服务。它复用项目现有�
 
 默认候选池覆盖 Binance USDⓈ-M 全部活跃 USDT 永续合约，不按 24 小时成交额
 淘汰长尾标的。雷达按合约代码稳定轮转，每批默认扫描 40 个标的；轮转游标持久化，
-进程重启后会从上一批继续。v2.5.0 同时保留两条彼此隔离的识别路径。
+进程重启后会从上一批继续。现行产品保留旧多周期、自适应日线和 1H 临界预警三条
+彼此隔离的识别路径。
 
 ### 旧多周期路径保持不变
 
@@ -50,6 +51,50 @@ TradingView Webhook，也不会启动新的 Web 服务。它复用项目现有�
 因此“结构周期 1D｜触发周期 4H”表示日线箱体的盘中预警，不等于已经取得日线
 收盘确认；“结构周期 1D｜触发周期 1D”才是日线收盘事件。两者使用独立事件 ID
 和状态，不会把 4H 预警自动改名为 1D 确认。
+
+### 1H 箱体临界预警
+
+这是独立的提前观察产品，不是“预计一定突破”。它在已闭合 1H K 线上识别并冻结
+短期 24 根、中期 72 根、长期 240 根箱体；同一标的多个期限同时合格时只监控最长
+一个。触发只读取已闭合 15m 和 1H K 线，触发 K 线不参与冻结边界计算。
+
+为了不把旧 4H/1D/1W 全市场轮转从每批 40 个压缩成 24 个，本产品使用独立预算和
+状态，分为两层：
+
+- 慢速发现层按合约代码轮转全市场，每批默认刷新 20 个标的的 1H 冻结箱体；
+- 快速监控层先用全市场最新价格筛出距任一有效边界不超过 1.0 个冻结 1H ATR 的
+  活跃箱体，再为最多 20 个近边界标的读取已闭合 15m K 线；如果 15m 请求失败或
+  无法聚合出两根完整 1H，会在预留请求预算内直取已闭合 1H 数据继续兜底。
+
+上沿和下沿判断完全对称，并且收盘必须仍在箱体内部：
+
+- 15m 临界区：距边界同时不超过 `0.20 ATR_1H` 和 `0.35%`；最近 4 根 15m 至少
+  有 2 段继续靠近且累计推进不低于 `0.10 ATR_1H`，或者最近 2 根都紧贴在
+  `0.10 ATR_1H` 内；
+- 1H 兜底：距边界同时不超过 `0.30 ATR_1H` 和 `0.35%`；相较上一根 1H 至少
+  靠近 `0.05 ATR_1H`，或者已经紧贴在 `0.10 ATR_1H` 内。若已有更新的闭合 15m，
+  不会退回上一根较旧 1H 发预警；
+- 同一 `标的 + 冻结箱体 + 上/下沿` 的一次接近过程只预警一次。15m 已成功推送后，
+  1H 不再重复；只有未出现或未成功消费 15m 预警时，1H 才作为兜底；
+- 价格连续 2 根已闭合 1H 退回该边界至少 `0.60 ATR_1H` 后重新武装。新冻结箱体
+  使用新箱体 ID，可独立开始下一轮生命周期。
+
+收盘已经越界时不再叫“临近”；影线越界但收回箱体属于扫流动性。正式突破、跌破、
+扫盘、回踩、假突破/假跌破和三推等原结构事件始终优先，同一标的同一收线不会再
+补发低优先级临界预警。成交量只展示原始量比，不作为临近硬门槛，也不使用评分、
+胜率、目标位或止损位。
+
+快速监控每次判断前都会先用新出现的闭合 1H K 线推进该箱体状态。若慢速发现批次
+尚未轮到这个标的，但期间已经发生突破、扫盘、假突破或箱体失效，旧箱体不会继续
+产生临近预警；同一批闭合数据也不会在下一轮被重新解释为临近。若旧状态已经早于
+当前 264 根 1H 历史窗口，发现层不会跨越未知空档，而会丢弃旧轨迹并只用当前完整
+窗口重新识别；无法重建时保持失活。
+
+“4H 以上共振”仅指同方向冻结箱体边界重合：上沿预警只比较 4H/1D/1W 上沿，
+下沿预警只比较对应下沿；边界差必须同时不超过
+`0.35 × min(ATR_1H, ATR_高周期)` 和 `0.50%`。每个高周期只保留最长合格箱体，
+消息按 `1W → 1D → 4H` 列出命中项；没有命中时明确写“无（仅1H结构）”。共振只是
+可复核的结构事实，不代表更高胜率或必然突破。
 
 ## 每日全市场 1D 地图
 
@@ -102,6 +147,8 @@ Telegram 正文默认只展示排序后的前 20 个重点结构，但完整结�
 - 由 4H 收线触发的日线边界事件使用 `1D STRUCT / 4H TRIGGER` 语义：底图仍是
   1D 冻结结构，同时在图上单独标出 4H 事件价格与时间，不用 264 根 4H K 线
   冒充数百日结构。
+- 1H 临界预警使用 `1H STRUCT / 15m TRIGGER` 或 `1H STRUCT / 1H TRIGGER`：
+  底图保留完整冻结箱体，并单独标出触发时间、收盘价和临近方向。
 - 三推图在价格区标出 P1/P2/P3，在 MACD 区分别标出三个独立枢轴，并同时显示
   冻结颈线和失效位。价格与 MACD 标记使用各自的实际枢轴时间，不会把价格
   高低点所在 K 线冒充为 MACD 枢轴。
@@ -166,7 +213,7 @@ Telegram 双门禁及默认关闭/影子运行的生产门禁。
 普通推送永远不会自动创建话题。新模板使用严格路由：话题 ID 缺失、非数字、
 0 或负数都会在任何 Telegram HTTP 请求前阻断，绝不会退回群主界面。
 
-已有话题升级到 V2.5.0 时，只刷新本版说明而不新建话题：
+已有话题升级到包含 1H 临界预警的说明时，只刷新本版说明而不新建话题：
 
 ```bash
 .venv/bin/python main.py telegram-topic-refresh \
@@ -216,6 +263,15 @@ CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE=false
 CONSOLIDATION_BREAKOUT_MAX_SIGNALS_PER_SCAN=8
 CONSOLIDATION_BREAKOUT_STATE_FILE=consolidation_breakout_state.json
 
+# 独立1H箱体临界预警；升级时默认关闭并保持影子模式。
+CONSOLIDATION_HOURLY_PROXIMITY_ENABLE=false
+CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE=true
+CONSOLIDATION_HOURLY_PROXIMITY_DISCOVERY_LIMIT=20
+CONSOLIDATION_HOURLY_PROXIMITY_MONITOR_LIMIT=20
+CONSOLIDATION_HOURLY_PROXIMITY_KLINE_BUDGET=60
+CONSOLIDATION_HOURLY_PROXIMITY_MAX_SIGNALS_PER_SCAN=4
+CONSOLIDATION_HOURLY_PROXIMITY_STATE_FILE=consolidation_hourly_proximity_state.json
+
 # 自适应日线产品独立安全门禁；升级时默认不运行且保持影子模式。
 CONSOLIDATION_DAILY_PRODUCT_ENABLE=false
 CONSOLIDATION_DAILY_SHADOW_MODE=true
@@ -236,6 +292,23 @@ CONSOLIDATION_DAILY_DIGEST_STATE_FILE=consolidation_daily_digest_state.json
 .venv/bin/python scripts/paopao_config.py enable CONSOLIDATION_DAILY_SHADOW_MODE
 .venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_DAILY_DIGEST_ENABLE
 .venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE
+```
+
+1H 临界预警的两个布尔开关也可通过配置管理器安全启停。建议先只观察影子诊断：
+自动调度仍由父开关 `CONSOLIDATION_BREAKOUT_ENABLE=true` 驱动；子开关不会单独启动
+第二个常驻服务。
+
+```bash
+.venv/bin/python scripts/paopao_config.py enable CONSOLIDATION_HOURLY_PROXIMITY_ENABLE
+.venv/bin/python scripts/paopao_config.py enable CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE
+```
+
+影子模式会更新独立发现、监控和 `shadow_seen` 状态，但不会调用 Telegram；真实
+`live_sent` 状态不会被影子观察消费。确认全市场发现游标、活跃监控数量、临近样本、
+收线延迟和高周期共振标注正确后，才关闭影子模式：
+
+```bash
+.venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE
 ```
 
 建议按以下顺序上线：
@@ -261,10 +334,11 @@ CONSOLIDATION_DAILY_DIGEST_STATE_FILE=consolidation_daily_digest_state.json
 写后校验。生产真实发送仍额外要求 `--send --confirm-real-send`，配置开关本身不能
 绕过双门禁。
 
-历史长度、日报条数、重试轮数、最长等待时间以及两个状态文件路径刻意不进入
-运行时配置管理器白名单，避免日常操作误改算法口径或状态边界。如需调整这些值，
-必须在发布维护窗口人工审查 `config/.env.oi`、执行配置校验并重启相关服务。两个
-状态文件彼此独立，也不复用原有 `consolidation_breakout_state.json`。
+历史长度、日报条数、重试轮数、最长等待时间、1H 临界预警的批次/预算参数以及
+三个新产品状态文件路径刻意不进入运行时配置管理器白名单，避免日常操作误改算法
+口径或状态边界。如需调整这些值，必须在发布维护窗口人工审查 `config/.env.oi`、
+执行配置校验并重启相关服务。各状态文件彼此独立，也不复用原有
+`consolidation_breakout_state.json`。
 
 - `SCAN_LIMIT` 是每批数量，不是全市场候选池上限。默认 40 个标的 × 3 个周期
   = 120 次 K 线请求，恰好处于默认每轮预算内；即使命令行填得更大，实际批量
@@ -311,9 +385,11 @@ CONSOLIDATION_DAILY_DIGEST_STATE_FILE=consolidation_daily_digest_state.json
 .venv/bin/python main.py runtime-status
 ```
 
-三个状态边界彼此独立：
+四个状态边界彼此独立：
 
 - `data/consolidation_breakout_state.json`：旧 4H/1D/1W 箱体、三推和全市场轮转；
+- `data/consolidation_hourly_proximity_state.json`：1H 冻结箱体、发现游标、近边界
+  监控、影子观察、真实发送及重新武装状态；
 - `data/consolidation_daily_product_state.json`：自适应 1D 箱体、观察快照和 4H 监控；
 - `data/consolidation_daily_digest_state.json`：目标日 K 覆盖、最近 7 份完整快照和
   最新一份待投递日报。
@@ -338,6 +414,13 @@ Telegram 历史确认重复的事件状态，才会完成对应事件迁移。�
 .venv/bin/python scripts/paopao_config.py enable CONSOLIDATION_DAILY_SHADOW_MODE
 .venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE
 .venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_DAILY_DIGEST_ENABLE
+```
+
+需要立即停止 1H 临界预警流量时，先恢复影子模式；如需连识别也停用，再关闭产品：
+
+```bash
+.venv/bin/python scripts/paopao_config.py enable CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE
+.venv/bin/python scripts/paopao_config.py disable CONSOLIDATION_HOURLY_PROXIMITY_ENABLE
 ```
 
 如需连自适应识别也停用，再关闭 `CONSOLIDATION_DAILY_PRODUCT_ENABLE`。只回滚三推

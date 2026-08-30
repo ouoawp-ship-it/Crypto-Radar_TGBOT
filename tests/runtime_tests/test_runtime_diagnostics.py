@@ -213,6 +213,132 @@ class MarketRadarRuntimeStatusTests(unittest.TestCase):
         self.assertEqual(radar["candidate_count"], 524)
         self.assertEqual(radar["scanned_count"], 40)
 
+    def test_hourly_proximity_status_exposes_child_and_state_file(self) -> None:
+        now = 2_000_000_000
+        stamp = datetime.fromtimestamp(now - 10).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            settings = replace(
+                settings,
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+                consolidation_hourly_proximity_shadow_mode=True,
+            )
+            store.save(
+                settings.consolidation_hourly_proximity_state_path,
+                {
+                    "schema_version": 1,
+                    "updated_at": now - 9,
+                    "tracks": {"BTCUSDT|1h|long": {}},
+                    "rotation": {
+                        "after_symbol": "BTCUSDT",
+                        "round": 2,
+                    },
+                },
+            )
+            store.save(settings.runtime_status_path, {
+                "updated_at": stamp,
+                "mode": "live",
+                "task": "loop",
+                "status": "running",
+                "real_send": True,
+                "last_consolidation_breakout_at": stamp,
+                "next_consolidation_breakout_at": "later",
+                "consolidation_breakout_cycle_status": "ok",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "candidate_count": 500,
+                        "scanned_symbol_count": 40,
+                        "hourly_proximity": {
+                            "status": "shadow_observed",
+                            "delivery_status": "skipped",
+                            "scan": {
+                                "status": "ok",
+                                "candidate_count": 500,
+                                "discovery_batch_count": 20,
+                                "active_box_symbol_count": 30,
+                                "fast_monitor_count": 12,
+                                "event_count": 2,
+                                "confluence_event_count": 1,
+                                "skipped_closed_15m_bar_count": 0,
+                                "p95_decision_latency_sec": 95.4,
+                                "max_decision_latency_sec": 120.8,
+                            },
+                        },
+                    },
+                },
+            })
+
+            result = build_market_radar_runtime_status(
+                settings,
+                store,
+                now=now,
+            )
+
+        radar = result["radars"]["consolidation_breakout"]
+        child = radar["hourly_proximity"]
+        self.assertEqual(radar["state"], "running")
+        self.assertEqual(child["state"], "running")
+        self.assertEqual(child["reported_status"], "shadow_observed")
+        self.assertEqual(child["scan_status"], "ok")
+        self.assertTrue(child["state_file_exists"])
+        self.assertEqual(child["state_track_count"], 1)
+        self.assertEqual(child["rotation_round"], 2)
+        self.assertEqual(child["candidate_count"], 500)
+        self.assertEqual(child["discovery_batch_count"], 20)
+        self.assertEqual(child["p95_decision_latency_sec"], 95)
+
+    def test_hourly_proximity_failure_degrades_parent_status(self) -> None:
+        now = 2_000_000_000
+        stamp = datetime.fromtimestamp(now - 10).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        with TemporaryDirectory() as tmp:
+            settings, store = self.runtime(Path(tmp))
+            settings = replace(
+                settings,
+                consolidation_breakout_enable=True,
+                consolidation_hourly_proximity_enable=True,
+            )
+            store.save(settings.runtime_status_path, {
+                "updated_at": stamp,
+                "mode": "live",
+                "task": "loop",
+                "status": "running",
+                "real_send": True,
+                "last_consolidation_breakout_at": stamp,
+                "next_consolidation_breakout_at": "later",
+                "consolidation_breakout_cycle_status": "ok",
+                "diagnostics": {
+                    "consolidation_breakout": {
+                        "hourly_proximity": {
+                            "status": "scan_failed",
+                            "error_code": "RuntimeError",
+                        },
+                    },
+                },
+            })
+
+            result = build_market_radar_runtime_status(
+                settings,
+                store,
+                now=now,
+            )
+
+        radar = result["radars"]["consolidation_breakout"]
+        child = radar["hourly_proximity"]
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(radar["state"], "degraded")
+        self.assertEqual(
+            radar["state_reason"],
+            "hourly_proximity_scan_failed",
+        )
+        self.assertEqual(child["state"], "degraded")
+        self.assertEqual(child["state_reason"], "scan_failed")
+        self.assertFalse(child["state_file_exists"])
+
     def test_stale_heartbeat_does_not_claim_running(self) -> None:
         now = 2_000_000_000
         with TemporaryDirectory() as tmp:
