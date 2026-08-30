@@ -406,8 +406,8 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(sum(line.count("USDT") for line in lines), 25)
         self.assertNotIn("", lines)
 
-    def test_true_launch_category_scores_multi_factor_confirmation(self) -> None:
-        category, score, _reason = flow_category({
+    def test_true_launch_category_requires_multi_factor_confirmation(self) -> None:
+        category, reason = flow_category({
             "price_24h": 6.0,
             "oi_24h": 8.0,
             "spot_cvd_delta": 1_000_000,
@@ -421,10 +421,10 @@ class FlowRadarTests(unittest.TestCase):
         })
 
         self.assertEqual(category, "真启动候选")
-        self.assertGreaterEqual(score, 90)
+        self.assertIn("现货净占比", reason)
 
     def test_neutral_cvd_does_not_trigger_distribution(self) -> None:
-        category, _score, _reason = flow_category({
+        category, _reason = flow_category({
             "price_24h": -1.0,
             "oi_24h": -1.0,
             "spot_cvd_delta": 0.0,
@@ -445,7 +445,7 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(fmt_cvd(0.0, False), "缺失")
 
     def test_missing_cvd_does_not_create_fake_distribution_signal(self) -> None:
-        category, score, reason = flow_category({
+        category, reason = flow_category({
             "price_24h": 20.0,
             "oi_24h": 0.0,
             "spot_cvd_delta": 0.0,
@@ -457,11 +457,10 @@ class FlowRadarTests(unittest.TestCase):
         })
 
         self.assertEqual(category, "数据不足")
-        self.assertEqual(score, 0)
         self.assertIn("Binance 主动成交数据缺失", reason)
 
     def test_missing_funding_is_not_treated_as_zero(self) -> None:
-        category, score, reason = flow_category({
+        category, reason = flow_category({
             "price_24h": 6.0,
             "oi_24h": 8.0,
             "spot_cvd_delta": 1_000_000,
@@ -472,7 +471,6 @@ class FlowRadarTests(unittest.TestCase):
         })
 
         self.assertEqual(category, "数据不足")
-        self.assertEqual(score, 0)
         self.assertIn("资金费率缺失", reason)
 
     def test_active_net_ratio_requires_absolute_and_relative_thresholds(self) -> None:
@@ -503,7 +501,7 @@ class FlowRadarTests(unittest.TestCase):
         self.assertFalse(flow_classification(low_ratio, settings)["eligible"])
         self.assertAlmostEqual(flow_net_ratio_pct(20_000, 510_000, 490_000), 2.0)
 
-    def test_p0_categories_require_complete_core_gates(self) -> None:
+    def test_p1_categories_require_complete_core_gates(self) -> None:
         for missing_field in (
             "price_ready",
             "oi_ready",
@@ -518,7 +516,7 @@ class FlowRadarTests(unittest.TestCase):
                 self.assertEqual(result["category"], "数据不足")
                 self.assertFalse(result["eligible"])
 
-    def test_p0_strict_category_fixtures(self) -> None:
+    def test_p1_strict_category_fixtures_are_mutually_exclusive(self) -> None:
         cases = {
             "真启动候选": self._flow_item(),
             "吸筹观察": self._flow_item(
@@ -576,9 +574,10 @@ class FlowRadarTests(unittest.TestCase):
                 result = flow_classification(item)
                 self.assertEqual(result["category"], expected)
                 self.assertTrue(result["eligible"])
-                self.assertGreaterEqual(result["score"], 60)
+                self.assertNotIn("score", result)
+                self.assertNotIn("alternatives", result)
 
-    def test_p0_score_is_monotonic_for_stronger_same_category_evidence(self) -> None:
+    def test_same_category_keeps_evidence_without_score(self) -> None:
         weak = flow_classification(self._flow_item(
             price_24h=1.1,
             oi_1h=2.1,
@@ -606,7 +605,8 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertEqual(weak["category"], "真启动候选")
         self.assertEqual(strong["category"], "真启动候选")
-        self.assertGreaterEqual(strong["score"], weak["score"])
+        self.assertNotIn("score", weak)
+        self.assertNotIn("score", strong)
 
     def test_candidate_pool_diversifies_liquidity_movers_and_funding(self) -> None:
         class Source:
@@ -672,10 +672,16 @@ class FlowRadarTests(unittest.TestCase):
         self.assertEqual(len(candidates), 8)
         self.assertEqual({item["priority_rank"] for item in candidates}, set(range(1, 9)))
 
-    def test_rotation_covers_full_market_before_repeating(self) -> None:
+    def test_rotation_covers_full_market_before_repeating_without_anomalies(self) -> None:
         with TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            settings = Settings(data_dir=data_dir, flow_scan_limit=24)
+            settings = Settings(
+                data_dir=data_dir,
+                flow_scan_limit=24,
+                flow_fixed_top=0,
+                flow_ticker_filter_pct=999,
+                flow_funding_filter_pct=999,
+            )
             candidates = [
                 {
                     "symbol": f"C{index:02d}USDT",
@@ -714,6 +720,104 @@ class FlowRadarTests(unittest.TestCase):
                 first_status["next_symbols"],
                 [str(item["symbol"]) for item in second],
             )
+
+    def test_two_stage_selection_prioritizes_fixed_and_anomalies(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                flow_scan_limit=6,
+                flow_fixed_top=2,
+                flow_ticker_filter_pct=2.0,
+                flow_funding_filter_pct=0.05,
+            )
+            movers = {"C02": 30.0, "C03": 20.0}
+            candidates = [
+                {
+                    "symbol": f"C{index:02d}USDT",
+                    "coin": f"C{index:02d}",
+                    "price": 1.0,
+                    "price_24h": movers.get(f"C{index:02d}", 0.1),
+                    "quote_volume": 1_000_000.0 - index,
+                    "funding_pct": 0.0,
+                    "funding_ready": True,
+                    "selection_reasons": ["liquidity"],
+                    "priority_rank": index + 1,
+                }
+                for index in range(10)
+            ]
+            engine = FlowRadarEngine(settings, JsonStore(data_dir))
+
+            first, state = engine._rotation_candidates(candidates)
+            first_status = engine._save_candidate_state(
+                candidates,
+                state,
+                selected_symbols={str(item["symbol"]) for item in first},
+                observed_at=100,
+            )
+            second, _state = FlowRadarEngine(
+                settings, JsonStore(data_dir)
+            )._rotation_candidates(candidates)
+
+            self.assertEqual(
+                [str(item["symbol"]) for item in first],
+                ["C00USDT", "C01USDT", "C02USDT", "C03USDT", "C04USDT", "C05USDT"],
+            )
+            self.assertEqual(
+                [str(item["symbol"]) for item in second],
+                ["C00USDT", "C01USDT", "C02USDT", "C03USDT", "C06USDT", "C07USDT"],
+            )
+            self.assertEqual(
+                state["selection_breakdown"],
+                {"fixed": 2, "anomaly": 2, "rotation": 2},
+            )
+            self.assertEqual(
+                first_status["next_symbols"],
+                [str(item["symbol"]) for item in second],
+            )
+
+    def test_anomaly_saturation_cannot_starve_rotation_pool(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                flow_scan_limit=4,
+                flow_fixed_top=1,
+                flow_ticker_filter_pct=0.01,
+                flow_funding_filter_pct=999,
+            )
+            candidates = [
+                {
+                    "symbol": f"C{index:02d}USDT",
+                    "coin": f"C{index:02d}",
+                    "price": 1.0,
+                    "price_24h": float(10 - index),
+                    "quote_volume": 1_000_000.0 - index,
+                    "funding_pct": 0.0,
+                    "funding_ready": True,
+                    "selection_reasons": ["price_mover"],
+                    "priority_rank": index + 1,
+                }
+                for index in range(8)
+            ]
+            engine = FlowRadarEngine(settings, JsonStore(data_dir))
+            seen: set[str] = set()
+
+            for cycle in range(5):
+                selected, state = engine._rotation_candidates(candidates)
+                seen.update(str(item["symbol"]) for item in selected)
+                self.assertEqual(
+                    state["selection_breakdown"],
+                    {"fixed": 1, "anomaly": 2, "rotation": 1},
+                )
+                engine._save_candidate_state(
+                    candidates,
+                    state,
+                    selected_symbols={str(item["symbol"]) for item in selected},
+                    observed_at=100 + cycle,
+                )
+
+            self.assertEqual(seen, {str(item["symbol"]) for item in candidates})
 
     @staticmethod
     def _flow_item(**overrides: object) -> dict[str, object]:

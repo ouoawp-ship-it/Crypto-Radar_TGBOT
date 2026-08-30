@@ -1466,6 +1466,10 @@ class TelegramGatewayTests(unittest.TestCase):
             settings = Settings(data_dir=Path(tmp))
             expected = {
                 "TG_FLOW_RADAR": [
+                    "P1.1 使用单一1小时闭合窗口和 7 类互斥规则",
+                    "取消 60～100 分评分",
+                    "永久保留至少四分之一名额用于公平轮换",
+                    "异动过多时不会挤占轮换保底名额",
                     "分类图例",
                     "真启动 = 价格、OI、现货主动成交净额、合约主动成交净额共振",
                     "恐慌下跌 = 下跌增仓且主动卖出增强",
@@ -1497,6 +1501,12 @@ class TelegramGatewayTests(unittest.TestCase):
                     self.assertNotIn("多交易所共振", intro)
                     self.assertNotIn("交易所偏离", intro)
                     self.assertNotIn("回复上一条", intro)
+                if template_id == "TG_FLOW_RADAR":
+                    self.assertNotIn("评分最低", intro)
+                    self.assertEqual(
+                        topic_intro_version(template_id),
+                        "2026-08-30-flow-p1-v1",
+                    )
                 self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_summary_topic_intro_holds_static_legend(self) -> None:
