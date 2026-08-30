@@ -16,13 +16,16 @@ from radars.capital_flow.radar import (
     flow_category,
     flow_classification,
     flow_net_ratio_pct,
+    flow_threshold_profile,
     fmt_cvd,
     kline_cvd_delta_info,
     kline_cvd_flow_info,
     market_cap_candidate_lines,
+    select_flow_rows,
     series_delta_info,
 )
 from shared.storage import JsonStore
+from shared.market_cockpit import MarketSnapshotStore
 from shared.time_windows import ClosedWindow, closed_window
 
 
@@ -153,7 +156,14 @@ class FlowRadarTests(unittest.TestCase):
     def test_candidate_symbols_keeps_binance_funding_percent_once(self) -> None:
         class Source:
             def usdt_perp_symbols(self):
-                return [{"symbol": "BTCUSDT"}]
+                return [{
+                    "symbol": "BTCUSDT",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "PERPETUAL",
+                    "underlyingType": "COIN",
+                }]
 
             def premium_index(self):
                 return [{"symbol": "BTCUSDT", "lastFundingRate": "0.0001"}]
@@ -164,6 +174,62 @@ class FlowRadarTests(unittest.TestCase):
         candidates = FlowRadarEngine(Settings(radar_min_quote_volume=1))._candidate_symbols(Source())
 
         self.assertEqual(candidates[0]["funding_pct"], 0.01)
+
+    def test_candidate_pool_rejects_tradfi_stablecoin_and_unknown_assets(self) -> None:
+        class Source:
+            def usdt_perp_symbols(self):
+                return [
+                    {
+                        "symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT",
+                        "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN",
+                    },
+                    {
+                        "symbol": "MRNAUSDT", "baseAsset": "MRNA", "quoteAsset": "USDT",
+                        "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "EQUITY",
+                    },
+                    {
+                        "symbol": "USDCUSDT", "baseAsset": "USDC", "quoteAsset": "USDT",
+                        "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN",
+                    },
+                    {
+                        "symbol": "MYSTERYUSDT", "baseAsset": "MYSTERY", "quoteAsset": "USDT",
+                        "status": "TRADING", "contractType": "PERPETUAL",
+                    },
+                    {
+                        "symbol": "DOGEUSDT", "baseAsset": "DOGE", "quoteAsset": "USDT",
+                        "status": "TRADING", "contractType": "PERPETUAL", "underlyingType": "COIN",
+                    },
+                ]
+
+            def spot_symbols(self):
+                return frozenset({"BTCUSDT"})
+
+            def premium_index(self):
+                return [
+                    {"symbol": symbol, "lastFundingRate": "0.0001"}
+                    for symbol in ("BTCUSDT", "MRNAUSDT", "USDCUSDT", "MYSTERYUSDT", "DOGEUSDT")
+                ]
+
+            def ticker_24h(self):
+                return [
+                    {
+                        "symbol": symbol,
+                        "quoteVolume": "10000000",
+                        "priceChangePercent": "2",
+                        "lastPrice": "1",
+                    }
+                    for symbol in ("BTCUSDT", "MRNAUSDT", "USDCUSDT", "MYSTERYUSDT", "DOGEUSDT")
+                ]
+
+        engine = FlowRadarEngine(Settings(radar_min_quote_volume=1))
+        candidates = engine._candidate_symbols(Source())
+
+        self.assertEqual([item["symbol"] for item in candidates], ["BTCUSDT"])
+        self.assertEqual(
+            engine.candidate_filter_diagnostics["rejected"],
+            {"stablecoin": 1, "tradfi": 1, "unknown_asset": 1},
+        )
+        self.assertEqual(engine.candidate_filter_diagnostics["without_spot_pair"], 1)
 
     def test_closed_window_waits_for_delay_before_using_latest_hour(self) -> None:
         from datetime import datetime, timedelta, timezone
@@ -187,7 +253,8 @@ class FlowRadarTests(unittest.TestCase):
 
         self.assertIn("本轮统计", text)
         self.assertIn("全市场候选: 0（无固定数量上限）", text)
-        self.assertIn("本轮优先轮换: 0/0", text)
+        self.assertIn("本轮完成分析: 0/0", text)
+        self.assertIn("数据复用: 共享15分钟快照 0 | REST缺口回退 0", text)
         self.assertNotIn("📖 图例", text)
         self.assertNotIn("📐 数据与计算口径", text)
         self.assertNotIn("市场边界: 仅代表 Binance", text)
@@ -222,7 +289,7 @@ class FlowRadarTests(unittest.TestCase):
         )
 
         self.assertIn("本轮深度扫描（24）", text)
-        self.assertIn("下一轮优先队列（6）", text)
+        self.assertIn("共享快照缺失时的下一轮 REST 回退队列（6）", text)
         self.assertIn("全市场候选 · 市值排行", text)
         self.assertIn("候选 30 | 市值覆盖 0 | 待补全 30", text)
         self.assertIn("市值待补全（30）", text)
@@ -588,7 +655,8 @@ class FlowRadarTests(unittest.TestCase):
             futures_cvd_delta=30_000,
             futures_inflow_usd=515_000,
             futures_outflow_usd=485_000,
-            quote_volume=10_000_000,
+            market_cap=500_000_000,
+            quote_volume=25_000_000,
         ))
         strong = flow_classification(self._flow_item(
             price_24h=4.0,
@@ -608,11 +676,61 @@ class FlowRadarTests(unittest.TestCase):
         self.assertNotIn("score", weak)
         self.assertNotIn("score", strong)
 
+    def test_market_cap_and_liquidity_tiers_change_effective_thresholds(self) -> None:
+        settings = Settings()
+        mega_high = flow_threshold_profile(
+            {"market_cap": 20_000_000_000, "quote_volume": 500_000_000},
+            settings,
+        )
+        small_low = flow_threshold_profile(
+            {"market_cap": 50_000_000, "quote_volume": 8_000_000},
+            settings,
+        )
+        unknown = flow_threshold_profile(
+            {"market_cap": None, "quote_volume": 50_000_000},
+            settings,
+        )
+
+        self.assertEqual(mega_high["market_cap_tier"], "mega")
+        self.assertEqual(mega_high["liquidity_tier"], "high")
+        self.assertEqual(small_low["market_cap_tier"], "small")
+        self.assertEqual(small_low["liquidity_tier"], "low")
+        self.assertEqual(unknown["market_cap_tier"], "unknown")
+        self.assertLess(mega_high["price_move_min_pct"], small_low["price_move_min_pct"])
+        self.assertLess(mega_high["oi_build_min_pct"], small_low["oi_build_min_pct"])
+        self.assertGreater(
+            small_low["spot_net_ratio_min_pct"],
+            mega_high["spot_net_ratio_min_pct"],
+        )
+
+    def test_display_selection_prevents_one_category_from_hiding_risk(self) -> None:
+        rows = [
+            self._flow_item(symbol=f"LONG{index}USDT", category="真启动候选", oi_1h=20 - index)
+            for index in range(10)
+        ]
+        rows.extend([
+            self._flow_item(symbol="TRAPUSDT", category="诱多/派发", spot_cvd_delta=-500_000),
+            self._flow_item(symbol="PANICUSDT", category="恐慌下跌", oi_1h=12),
+        ])
+
+        selected = select_flow_rows(rows, 8)
+
+        self.assertEqual(len(selected), 8)
+        self.assertIn("诱多/派发", {item["category"] for item in selected})
+        self.assertIn("恐慌下跌", {item["category"] for item in selected})
+
     def test_candidate_pool_diversifies_liquidity_movers_and_funding(self) -> None:
         class Source:
             def usdt_perp_symbols(self):
                 return [
-                    {"symbol": symbol}
+                    {
+                        "symbol": symbol,
+                        "baseAsset": symbol[:-4],
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "underlyingType": "COIN",
+                    }
                     for symbol in ("LIQUSDT", "MOVEUSDT", "FUNDUSDT", "OTHERUSDT")
                 ]
 
@@ -647,7 +765,17 @@ class FlowRadarTests(unittest.TestCase):
     def test_candidate_pool_does_not_truncate_full_market(self) -> None:
         class Source:
             def usdt_perp_symbols(self):
-                return [{"symbol": f"C{index}USDT"} for index in range(8)]
+                return [
+                    {
+                        "symbol": f"C{index}USDT",
+                        "baseAsset": f"C{index}",
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "underlyingType": "COIN",
+                    }
+                    for index in range(8)
+                ]
 
             def premium_index(self):
                 return [
@@ -818,6 +946,414 @@ class FlowRadarTests(unittest.TestCase):
                 )
 
             self.assertEqual(seen, {str(item["symbol"]) for item in candidates})
+
+    def test_candidate_state_preview_does_not_mutate_production_rotation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(data_dir=data_dir, flow_scan_limit=2, flow_fixed_top=0)
+            candidates = [
+                {
+                    "symbol": f"C{index}USDT",
+                    "coin": f"C{index}",
+                    "price": 1.0,
+                    "price_24h": 0.1,
+                    "quote_volume": 10_000_000.0,
+                    "funding_pct": 0.0,
+                    "funding_ready": True,
+                    "priority_rank": index + 1,
+                }
+                for index in range(4)
+            ]
+            engine = FlowRadarEngine(settings, JsonStore(data_dir))
+            selected, state = engine._rotation_candidates(candidates)
+
+            status = engine._save_candidate_state(
+                candidates,
+                state,
+                selected_symbols={str(item["symbol"]) for item in selected},
+                observed_at=100,
+                persist=False,
+            )
+
+            self.assertEqual(status["status"], "preview")
+            self.assertFalse(status["state_persisted"])
+            self.assertFalse(settings.flow_candidate_state_path.exists())
+
+    def test_build_reuses_one_futures_kline_payload_and_previews_state(self) -> None:
+        class Source:
+            def __init__(self) -> None:
+                self.futures_kline_calls = 0
+                self.spot_kline_calls = 0
+
+            def usdt_perp_symbols(self):
+                return [{
+                    "symbol": "BTCUSDT",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "PERPETUAL",
+                    "underlyingType": "COIN",
+                }]
+
+            def premium_index(self):
+                return [{"symbol": "BTCUSDT", "lastFundingRate": "0.0001"}]
+
+            def ticker_24h(self):
+                return [{
+                    "symbol": "BTCUSDT",
+                    "quoteVolume": "150000000",
+                    "priceChangePercent": "2",
+                    "lastPrice": "100",
+                }]
+
+            @staticmethod
+            def _kline(start_time: int) -> list[object]:
+                return [
+                    start_time, "100", "103", "99", "102", "10",
+                    start_time + 3_599_999, "1000000", 10, "6", "600000",
+                ]
+
+            def spot_klines(
+                self,
+                symbol: str,
+                interval: str,
+                limit: int,
+                start_time: int,
+                end_time: int,
+            ):
+                self.spot_kline_calls += 1
+                return [self._kline(start_time)]
+
+            def klines(
+                self,
+                symbol: str,
+                interval: str,
+                limit: int,
+                start_time: int,
+                end_time: int,
+            ):
+                self.futures_kline_calls += 1
+                return [self._kline(start_time)]
+
+            def open_interest_hist(
+                self,
+                symbol: str,
+                period: str,
+                limit: int,
+                start_time: int,
+                end_time: int,
+            ):
+                return [
+                    {"timestamp": start_time, "sumOpenInterestValue": "1000000"},
+                    {"timestamp": end_time, "sumOpenInterestValue": "1050000"},
+                ]
+
+            def diagnostics(self):
+                return {}
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                flow_candidate_state_path=data_dir / "flow_candidate_state.json",
+                market_snapshots_db_path=data_dir / "market_snapshots.db",
+                flow_scan_limit=1,
+                flow_fixed_top=1,
+                radar_min_quote_volume=1,
+            )
+            source = Source()
+
+            result = FlowRadarEngine(settings, JsonStore(data_dir)).build(
+                source,
+                persist_candidate_state=False,
+            )
+
+            self.assertEqual(source.futures_kline_calls, 1)
+            self.assertEqual(source.spot_kline_calls, 1)
+            self.assertEqual(result["diagnostics"]["candidate_rotation"]["status"], "preview")
+            self.assertFalse(settings.flow_candidate_state_path.exists())
+
+    def test_four_pulse_snapshots_form_one_exact_hour_without_rest_calls(self) -> None:
+        start = datetime(2026, 8, 31, 8, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
+        window = ClosedWindow(start=start, end=end, interval_sec=3_600, delay_sec=300)
+
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                market_snapshots_db_path=data_dir / "market_snapshots.db",
+            )
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+            rows = []
+            for index in range(1, 5):
+                rows.append({
+                    "symbol": "BTCUSDT",
+                    "observed_at": int(start.timestamp()) + index * 900,
+                    "source": "market_flow_15m",
+                    "window_sec": 900,
+                    "price": 100.0 + index,
+                    "price_change_pct": 1.0 if index == 1 else 0.0,
+                    "change_window_sec": 900,
+                    "quote_volume": 150_000_000.0,
+                    "market_cap": 20_000_000_000.0,
+                    "oi_usd": 1_000_000.0 + index * 10_000.0,
+                    "oi_change_pct": 1.0 if index == 1 else 0.0,
+                    "spot_inflow_usd": 600_000.0,
+                    "spot_outflow_usd": 400_000.0,
+                    "spot_flow_usd": 200_000.0,
+                    "futures_inflow_usd": 650_000.0,
+                    "futures_outflow_usd": 350_000.0,
+                    "futures_flow_usd": 300_000.0,
+                    "coverage": {
+                        "price": True,
+                        "oi": True,
+                        "spot_flow": True,
+                        "futures_flow": True,
+                    },
+                })
+            store.append_many(rows)
+            candidate = {
+                "symbol": "BTCUSDT",
+                "coin": "BTC",
+                "price": 104.0,
+                "quote_volume": 150_000_000.0,
+                "market_cap": 20_000_000_000.0,
+                "market_cap_source": "pulse_shared_snapshot",
+                "funding_pct": 0.01,
+                "funding_ready": True,
+                "asset_subclass": "core_crypto",
+                "asset_category_label": "核心加密资产",
+            }
+
+            items, status = FlowRadarEngine(settings)._cached_market_items(
+                [candidate],
+                window,
+            )
+
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["cached_symbols"], 1)
+        self.assertEqual(len(items), 1)
+        self.assertAlmostEqual(items[0]["price_window_pct"], 4.0)
+        self.assertAlmostEqual(items[0]["oi_1h"], 4.0)
+        self.assertEqual(items[0]["spot_cvd_delta"], 800_000.0)
+        self.assertEqual(items[0]["futures_cvd_delta"], 1_200_000.0)
+
+    def test_build_uses_complete_shared_cache_and_makes_zero_deep_rest_calls(self) -> None:
+        class Source:
+            def __init__(self) -> None:
+                self.deep_rest_calls = 0
+
+            def usdt_perp_symbols(self):
+                return [{
+                    "symbol": "BTCUSDT",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "PERPETUAL",
+                    "underlyingType": "COIN",
+                }]
+
+            def spot_symbols(self):
+                return frozenset({"BTCUSDT"})
+
+            def premium_index(self):
+                return [{"symbol": "BTCUSDT", "lastFundingRate": "0.0001"}]
+
+            def ticker_24h(self):
+                return [{
+                    "symbol": "BTCUSDT",
+                    "quoteVolume": "150000000",
+                    "priceChangePercent": "2",
+                    "lastPrice": "104",
+                }]
+
+            def coinpaprika_market_caps(self):
+                return {"BTC": 20_000_000_000.0}
+
+            def spot_klines(self, *_args, **_kwargs):
+                self.deep_rest_calls += 1
+                raise AssertionError("shared cache should avoid spot REST")
+
+            def klines(self, *_args, **_kwargs):
+                self.deep_rest_calls += 1
+                raise AssertionError("shared cache should avoid futures REST")
+
+            def open_interest_hist(self, *_args, **_kwargs):
+                self.deep_rest_calls += 1
+                raise AssertionError("shared cache should avoid OI REST")
+
+            def diagnostics(self):
+                return {}
+
+        window = closed_window(interval_sec=3_600, delay_sec=300)
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                market_snapshots_db_path=data_dir / "market_snapshots.db",
+                flow_candidate_state_path=data_dir / "flow_candidate_state.json",
+                radar_min_quote_volume=1,
+            )
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+            store.append_many([
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": int(window.start.timestamp()) + index * 900,
+                    "source": "market_flow_15m",
+                    "window_sec": 900,
+                    "price": 100.0 + index,
+                    "price_change_pct": 1.0 if index == 1 else 0.0,
+                    "change_window_sec": 900,
+                    "quote_volume": 150_000_000.0,
+                    "market_cap": 20_000_000_000.0,
+                    "oi_usd": 1_000_000.0 + index * 10_000.0,
+                    "oi_change_pct": 1.0 if index == 1 else 0.0,
+                    "spot_inflow_usd": 600_000.0,
+                    "spot_outflow_usd": 400_000.0,
+                    "spot_flow_usd": 200_000.0,
+                    "futures_inflow_usd": 650_000.0,
+                    "futures_outflow_usd": 350_000.0,
+                    "futures_flow_usd": 300_000.0,
+                    "coverage": {
+                        "price": True,
+                        "oi": True,
+                        "spot_flow": True,
+                        "futures_flow": True,
+                    },
+                }
+                for index in range(1, 5)
+            ])
+            source = Source()
+
+            result = FlowRadarEngine(settings, JsonStore(data_dir)).build(
+                source,
+                persist_candidate_state=False,
+            )
+
+        self.assertEqual(source.deep_rest_calls, 0)
+        self.assertEqual(result["diagnostics"]["shared_market_cache"]["status"], "complete")
+        self.assertEqual(result["diagnostics"]["coverage"]["status"], "complete")
+        self.assertEqual(result["diagnostics"]["coverage"]["rest_fallback_symbols"], 0)
+
+    def test_partial_shared_cache_fetches_only_the_missing_symbol(self) -> None:
+        class Source:
+            def __init__(self) -> None:
+                self.deep_symbols: list[str] = []
+
+            def usdt_perp_symbols(self):
+                return [
+                    {
+                        "symbol": f"{base}USDT",
+                        "baseAsset": base,
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                        "contractType": "PERPETUAL",
+                        "underlyingType": "COIN",
+                    }
+                    for base in ("BTC", "ETH")
+                ]
+
+            def spot_symbols(self):
+                return frozenset({"BTCUSDT", "ETHUSDT"})
+
+            def premium_index(self):
+                return [
+                    {"symbol": symbol, "lastFundingRate": "0.0001"}
+                    for symbol in ("BTCUSDT", "ETHUSDT")
+                ]
+
+            def ticker_24h(self):
+                return [
+                    {
+                        "symbol": symbol,
+                        "quoteVolume": "150000000",
+                        "priceChangePercent": "2",
+                        "lastPrice": "104",
+                    }
+                    for symbol in ("BTCUSDT", "ETHUSDT")
+                ]
+
+            def coinpaprika_market_caps(self):
+                return {"BTC": 20_000_000_000.0, "ETH": 10_000_000_000.0}
+
+            @staticmethod
+            def _kline(start_time: int):
+                return [[
+                    start_time, "100", "104", "99", "104", "10",
+                    start_time + 3_599_999, "1000000", 10, "6", "600000",
+                ]]
+
+            def spot_klines(self, symbol: str, *, start_time: int, **_kwargs):
+                self.deep_symbols.append(f"spot:{symbol}")
+                return self._kline(start_time)
+
+            def klines(self, symbol: str, *, start_time: int, **_kwargs):
+                self.deep_symbols.append(f"futures:{symbol}")
+                return self._kline(start_time)
+
+            def open_interest_hist(
+                self,
+                symbol: str,
+                *,
+                start_time: int,
+                end_time: int,
+                **_kwargs,
+            ):
+                self.deep_symbols.append(f"oi:{symbol}")
+                return [
+                    {"timestamp": start_time, "sumOpenInterestValue": "1000000"},
+                    {"timestamp": end_time, "sumOpenInterestValue": "1040000"},
+                ]
+
+            def diagnostics(self):
+                return {}
+
+        window = closed_window(interval_sec=3_600, delay_sec=300)
+        with TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            settings = Settings(
+                data_dir=data_dir,
+                market_snapshots_db_path=data_dir / "market_snapshots.db",
+                flow_candidate_state_path=data_dir / "flow_candidate_state.json",
+                radar_min_quote_volume=1,
+                flow_scan_limit=1,
+                flow_fixed_top=1,
+            )
+            MarketSnapshotStore(settings.market_snapshots_db_path).append_many([
+                {
+                    "symbol": "BTCUSDT",
+                    "observed_at": int(window.start.timestamp()) + index * 900,
+                    "source": "market_flow_15m",
+                    "window_sec": 900,
+                    "price": 100.0 + index,
+                    "price_change_pct": 1.0 if index == 1 else 0.0,
+                    "change_window_sec": 900,
+                    "quote_volume": 150_000_000.0,
+                    "market_cap": 20_000_000_000.0,
+                    "oi_usd": 1_000_000.0 + index * 10_000.0,
+                    "oi_change_pct": 1.0 if index == 1 else 0.0,
+                    "spot_inflow_usd": 600_000.0,
+                    "spot_outflow_usd": 400_000.0,
+                    "futures_inflow_usd": 650_000.0,
+                    "futures_outflow_usd": 350_000.0,
+                }
+                for index in range(1, 5)
+            ])
+            source = Source()
+
+            result = FlowRadarEngine(settings, JsonStore(data_dir)).build(
+                source,
+                persist_candidate_state=False,
+            )
+
+        self.assertCountEqual(
+            source.deep_symbols,
+            ["spot:ETHUSDT", "futures:ETHUSDT", "oi:ETHUSDT"],
+        )
+        self.assertEqual(result["diagnostics"]["shared_market_cache"]["status"], "partial")
+        self.assertEqual(result["diagnostics"]["coverage"]["status"], "complete")
+        self.assertEqual(result["diagnostics"]["coverage"]["rest_fallback_symbols"], 1)
 
     @staticmethod
     def _flow_item(**overrides: object) -> dict[str, object]:

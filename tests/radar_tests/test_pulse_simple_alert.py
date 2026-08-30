@@ -176,6 +176,41 @@ class AnalyzeSymbolTests(unittest.TestCase):
         self.assertEqual(item["trigger_source"], "none")
         self.assertIsNone(item["template"])
 
+    def test_complete_analysis_exposes_reusable_15m_flow_parts(self) -> None:
+        class Source:
+            @staticmethod
+            def klines(*_args, **_kwargs):
+                return AnalyzeSymbolTests._kline_rows()
+
+            @staticmethod
+            def open_interest_hist(*_args, **_kwargs):
+                return [
+                    {"timestamp": index, "sumOpenInterestValue": 1_000_000 + index * 10_000}
+                    for index in range(10)
+                ]
+
+            @staticmethod
+            def spot_klines(*_args, **_kwargs):
+                rows = AnalyzeSymbolTests._kline_rows()
+                for row in rows:
+                    row[10] = "600000"
+                return rows
+
+        item = _analyze_symbol(
+            Source(),  # type: ignore[arg-type]
+            self._candidate(),
+            10_000,
+            SimpleAlertConfig(),
+        )
+
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertTrue(item["market_snapshot_ready"])
+        self.assertEqual(item["spot_inflow_15m_usd"], 1_800_000.0)
+        self.assertEqual(item["spot_outflow_15m_usd"], 1_200_000.0)
+        self.assertEqual(item["futures_inflow_15m_usd"], 1_200_000.0)
+        self.assertEqual(item["futures_outflow_15m_usd"], 1_800_000.0)
+
 
 class FollowActionTests(unittest.TestCase):
     def _item(self, template: str, price: float, oi: float) -> dict:

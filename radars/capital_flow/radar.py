@@ -12,6 +12,7 @@ from shared.binance_confirmation import (
     confirmation_text,
 )
 from config import Settings
+from shared.asset_classification import crypto_contract_eligibility
 from shared.binance_data import BinanceDataSource
 from shared.market_flow import kline_cvd_flow_info
 from shared.market_links import coinglass_tv_url as _coinglass_tv_url
@@ -26,6 +27,41 @@ CST = timezone(timedelta(hours=8))
 CVD_NEUTRAL_ABS = 1.0
 FLOW_CANDIDATE_STATE_SCHEMA_VERSION = 1
 FLOW_MARKET_CAP_MAX_AGE_SEC = 15 * 60
+
+_FLOW_MARKET_CAP_LABELS = {
+    "mega": "超大市值",
+    "large": "大市值",
+    "mid": "中市值",
+    "small": "小市值",
+    "unknown": "市值待补全",
+}
+_FLOW_LIQUIDITY_LABELS = {
+    "high": "高流动性",
+    "medium": "中流动性",
+    "low": "低流动性",
+}
+_FLOW_MARKET_CAP_FACTORS = {
+    "mega": 0.75,
+    "large": 0.90,
+    "mid": 1.00,
+    "small": 1.25,
+    "unknown": 1.25,
+}
+_FLOW_LIQUIDITY_MOVE_FACTORS = {
+    "high": 0.90,
+    "medium": 1.00,
+    "low": 1.15,
+}
+_FLOW_LIQUIDITY_ABS_FACTORS = {
+    "high": 2.00,
+    "medium": 1.00,
+    "low": 0.50,
+}
+_FLOW_LIQUIDITY_RATIO_FACTORS = {
+    "high": 0.80,
+    "medium": 1.00,
+    "low": 1.50,
+}
 
 
 def cst_now_text(fmt: str = "%m-%d %H:%M CST") -> str:
@@ -314,14 +350,10 @@ def binance_oi_stats(
     return (last - first) / first * 100, last, True, len(history)
 
 
-def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool]:
-    klines = source.klines(
-        symbol,
-        interval="1h",
-        limit=3,
-        start_time=window.start_ms,
-        end_time=window.end_ms - 1,
-    )
+def kline_window_price_pct(
+    klines: list[list[Any]],
+    window: ClosedWindow,
+) -> tuple[float, bool]:
     selected = [
         kline for kline in klines
         if isinstance(kline, list)
@@ -338,6 +370,17 @@ def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: Clo
     if open_price <= 0:
         return 0.0, False
     return (close_price - open_price) / open_price * 100, True
+
+
+def binance_window_price_pct(source: BinanceDataSource, symbol: str, window: ClosedWindow) -> tuple[float, bool]:
+    klines = source.klines(
+        symbol,
+        interval="1h",
+        limit=3,
+        start_time=window.start_ms,
+        end_time=window.end_ms - 1,
+    )
+    return kline_window_price_pct(klines, window)
 
 
 def kline_cvd_delta_info(klines: list[list[Any]], window: ClosedWindow | None = None) -> tuple[float, bool, int]:
@@ -375,11 +418,103 @@ def binance_futures_flow_stats(
     return kline_cvd_flow_info(klines, window)
 
 
+def binance_futures_window_stats(
+    source: BinanceDataSource,
+    symbol: str,
+    window: ClosedWindow,
+) -> tuple[float, bool, float, float, float, bool, int]:
+    """Fetch one futures candle payload and derive both price and active flow."""
+    klines = source.klines(
+        symbol,
+        interval="1h",
+        limit=3,
+        start_time=window.start_ms,
+        end_time=window.end_ms - 1,
+    )
+    price_pct, price_ready = kline_window_price_pct(klines, window)
+    cvd, inflow, outflow, cvd_ready, points = kline_cvd_flow_info(klines, window)
+    return price_pct, price_ready, cvd, inflow, outflow, cvd_ready, points
+
+
 def flow_net_ratio_pct(net: float, inflow: Any, outflow: Any) -> float:
     gross = to_float(inflow) + to_float(outflow)
     if gross <= 0:
         return 0.0
     return to_float(net) / gross * 100
+
+
+def flow_market_cap_tier(value: Any) -> str:
+    market_cap = to_float(value)
+    if market_cap <= 0:
+        return "unknown"
+    if market_cap >= 10_000_000_000:
+        return "mega"
+    if market_cap >= 1_000_000_000:
+        return "large"
+    if market_cap >= 100_000_000:
+        return "mid"
+    return "small"
+
+
+def flow_liquidity_tier(value: Any) -> str:
+    quote_volume = to_float(value)
+    if quote_volume >= 100_000_000:
+        return "high"
+    if quote_volume >= 20_000_000:
+        return "medium"
+    return "low"
+
+
+def flow_threshold_profile(
+    item: Mapping[str, Any],
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Resolve the effective P2 gates for one market-cap x liquidity cell."""
+    settings = settings or Settings()
+    market_cap_tier = flow_market_cap_tier(item.get("market_cap"))
+    liquidity_tier = flow_liquidity_tier(item.get("quote_volume"))
+    move_factor = (
+        _FLOW_MARKET_CAP_FACTORS[market_cap_tier]
+        * _FLOW_LIQUIDITY_MOVE_FACTORS[liquidity_tier]
+    )
+    abs_factor = _FLOW_LIQUIDITY_ABS_FACTORS[liquidity_tier]
+    ratio_factor = _FLOW_LIQUIDITY_RATIO_FACTORS[liquidity_tier]
+    price_move = max(0.01, settings.flow_price_move_min_pct * move_factor)
+    return {
+        "market_cap_tier": market_cap_tier,
+        "market_cap_tier_label": _FLOW_MARKET_CAP_LABELS[market_cap_tier],
+        "liquidity_tier": liquidity_tier,
+        "liquidity_tier_label": _FLOW_LIQUIDITY_LABELS[liquidity_tier],
+        "price_move_min_pct": price_move,
+        "price_flat_max_pct": max(
+            price_move,
+            settings.flow_price_flat_max_pct * move_factor,
+        ),
+        "oi_build_min_pct": max(
+            0.01,
+            settings.flow_oi_build_min_pct * move_factor,
+        ),
+        "oi_unwind_max_pct": min(
+            -0.01,
+            settings.flow_oi_unwind_max_pct * move_factor,
+        ),
+        "spot_net_min_usd": max(
+            0.0,
+            settings.flow_spot_net_min_usd * abs_factor,
+        ),
+        "futures_net_min_usd": max(
+            0.0,
+            settings.flow_futures_net_min_usd * abs_factor,
+        ),
+        "spot_net_ratio_min_pct": max(
+            0.0,
+            settings.flow_spot_net_ratio_min_pct * ratio_factor,
+        ),
+        "futures_net_ratio_min_pct": max(
+            0.0,
+            settings.flow_futures_net_ratio_min_pct * ratio_factor,
+        ),
+    }
 
 
 def _flow_direction(
@@ -404,7 +539,8 @@ def flow_classification(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or Settings()
-    model_version = "flow_p1_1"
+    model_version = "flow_p2_0"
+    thresholds = flow_threshold_profile(item, settings)
     required = {
         "价格": bool(item.get("price_ready", True)),
         "oi": bool(item.get("oi_ready", True)),
@@ -431,6 +567,7 @@ def flow_classification(
             "gates": required,
             "spot_net_ratio_pct": 0.0,
             "futures_net_ratio_pct": 0.0,
+            "thresholds": thresholds,
         }
 
     price = to_float(item.get("price_window_pct", item.get("price_24h")))
@@ -462,20 +599,20 @@ def flow_classification(
         net=spot_net,
         ratio_pct=spot_ratio,
         ready=True,
-        min_abs_usd=settings.flow_spot_net_min_usd,
-        min_ratio_pct=settings.flow_spot_net_ratio_min_pct,
+        min_abs_usd=to_float(thresholds["spot_net_min_usd"]),
+        min_ratio_pct=to_float(thresholds["spot_net_ratio_min_pct"]),
     )
     futures_direction = _flow_direction(
         net=futures_net,
         ratio_pct=futures_ratio,
         ready=True,
-        min_abs_usd=settings.flow_futures_net_min_usd,
-        min_ratio_pct=settings.flow_futures_net_ratio_min_pct,
+        min_abs_usd=to_float(thresholds["futures_net_min_usd"]),
+        min_ratio_pct=to_float(thresholds["futures_net_ratio_min_pct"]),
     )
-    move = max(0.01, settings.flow_price_move_min_pct)
-    flat = max(move, settings.flow_price_flat_max_pct)
-    oi_build = max(0.01, settings.flow_oi_build_min_pct)
-    oi_unwind = min(-0.01, settings.flow_oi_unwind_max_pct)
+    move = to_float(thresholds["price_move_min_pct"])
+    flat = to_float(thresholds["price_flat_max_pct"])
+    oi_build = to_float(thresholds["oi_build_min_pct"])
+    oi_unwind = to_float(thresholds["oi_unwind_max_pct"])
 
     rules = (
         (
@@ -551,6 +688,7 @@ def flow_classification(
                 "gates": required,
                 "spot_net_ratio_pct": spot_ratio,
                 "futures_net_ratio_pct": futures_ratio,
+                "thresholds": thresholds,
             }
     return {
         "model_version": model_version,
@@ -563,6 +701,7 @@ def flow_classification(
         "gates": required,
         "spot_net_ratio_pct": spot_ratio,
         "futures_net_ratio_pct": futures_ratio,
+        "thresholds": thresholds,
     }
 
 
@@ -605,12 +744,60 @@ def _flow_display_key(item: Mapping[str, Any]) -> tuple[int, float]:
     return rank, -to_float(item.get("oi_1h"))
 
 
+def select_flow_rows(
+    rows: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Round-robin categories so one signal family cannot hide all others."""
+    safe_limit = max(1, int(limit))
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in sorted(rows, key=_flow_display_key):
+        grouped.setdefault(str(item.get("category") or ""), []).append(item)
+
+    category_order = list(_FLOW_CATEGORY_ORDER)
+    category_order.extend(
+        category for category in grouped
+        if category and category not in _FLOW_CATEGORY_ORDER
+    )
+    selected: list[dict[str, Any]] = []
+    row_index = 0
+    while len(selected) < safe_limit:
+        added = False
+        for category in category_order:
+            items = grouped.get(category, [])
+            if row_index >= len(items):
+                continue
+            selected.append(items[row_index])
+            added = True
+            if len(selected) >= safe_limit:
+                break
+        if not added:
+            break
+        row_index += 1
+    return selected
+
+
 class FlowRadarEngine:
     def __init__(self, settings: Settings, store: JsonStore | None = None):
         self.settings = settings
         self.store = store or JsonStore(settings.data_dir)
+        self.candidate_filter_diagnostics: dict[str, Any] = {
+            "active_contracts": 0,
+            "eligible_crypto_contracts": 0,
+            "eligible_five_factor_contracts": 0,
+            "rejected": {},
+            "spot_catalog_status": "not_checked",
+            "without_spot_pair": 0,
+            "below_liquidity_floor": 0,
+            "ticker_missing": 0,
+        }
 
-    def build(self, binance: BinanceDataSource) -> dict[str, Any]:
+    def build(
+        self,
+        binance: BinanceDataSource,
+        *,
+        persist_candidate_state: bool = True,
+    ) -> dict[str, Any]:
         window = closed_window(
             interval_sec=self.settings.flow_interval_sec,
             delay_sec=self.settings.flow_close_delay_sec,
@@ -620,15 +807,42 @@ class FlowRadarEngine:
             candidates,
             fallback_source=binance,
         )
-        rotation_candidates, rotation_state = self._rotation_candidates(candidates)
+        for candidate in candidates:
+            profile = flow_threshold_profile(candidate, self.settings)
+            candidate.update({
+                "market_cap_tier": profile["market_cap_tier"],
+                "market_cap_tier_label": profile["market_cap_tier_label"],
+                "liquidity_tier": profile["liquidity_tier"],
+                "liquidity_tier_label": profile["liquidity_tier_label"],
+            })
+        cached_items, shared_cache_status = self._cached_market_items(
+            candidates,
+            window,
+        )
+        cached_symbols = {
+            str(item.get("symbol") or "")
+            for item in cached_items
+        }
+        fallback_pool = [
+            candidate for candidate in candidates
+            if str(candidate.get("symbol") or "") not in cached_symbols
+        ]
+        rotation_candidates, rotation_state = self._rotation_candidates(fallback_pool)
         rows: list[dict[str, Any]] = []
-        scanned_items: list[dict[str, Any]] = []
+        scanned_items: list[dict[str, Any]] = list(cached_items)
         for candidate in rotation_candidates:
             symbol = candidate["symbol"]
             coin = candidate["coin"]
             spot_cvd, spot_inflow, spot_outflow, spot_cvd_ready, spot_cvd_points = binance_spot_flow_stats(binance, symbol, window)
-            futures_cvd, futures_inflow, futures_outflow, futures_cvd_ready, futures_cvd_points = binance_futures_flow_stats(binance, symbol, window)
-            price_pct, price_ready = binance_window_price_pct(binance, symbol, window)
+            (
+                price_pct,
+                price_ready,
+                futures_cvd,
+                futures_inflow,
+                futures_outflow,
+                futures_cvd_ready,
+                futures_cvd_points,
+            ) = binance_futures_window_stats(binance, symbol, window)
             oi_1h, oi_fallback_usd, oi_ready, oi_points = binance_oi_stats(
                 binance,
                 symbol,
@@ -678,7 +892,19 @@ class FlowRadarEngine:
                 "funding_ready": bool(candidate.get("funding_ready")),
                 "quote_volume": abs(quote_volume),
                 "oi_usd": oi_usd,
+                "market_cap": candidate.get("market_cap"),
+                "market_cap_source": candidate.get("market_cap_source"),
+                "market_cap_tier": candidate.get("market_cap_tier"),
+                "market_cap_tier_label": candidate.get("market_cap_tier_label"),
+                "liquidity_tier": candidate.get("liquidity_tier"),
+                "liquidity_tier_label": candidate.get("liquidity_tier_label"),
+                "asset_subclass": candidate.get("asset_subclass"),
+                "asset_category_label": candidate.get("asset_category_label"),
+                "flow_data_path": "rest_fallback",
             }
+            scanned_items.append(item)
+
+        for item in scanned_items:
             classification = flow_classification(item, self.settings)
             item.update({
                 "category": classification["category"],
@@ -686,10 +912,8 @@ class FlowRadarEngine:
                 "flow_model_version": classification["model_version"],
                 "flow_model_eligible": classification["eligible"],
                 "flow_core_gates": classification["gates"],
+                "flow_thresholds": classification["thresholds"],
             })
-            scanned_items.append(item)
-
-        for item in scanned_items:
             apply_binance_confirmation(
                 item,
                 {
@@ -709,14 +933,35 @@ class FlowRadarEngine:
             ):
                 rows.append(item)
 
-        rows.sort(key=_flow_display_key)
-        rows = rows[: max(1, self.settings.flow_top_n)]
+        rows = select_flow_rows(rows, self.settings.flow_top_n)
         rotation_status = self._save_candidate_state(
             candidates,
             rotation_state,
-            selected_symbols={str(item["symbol"]) for item in rotation_candidates},
+            selected_symbols=(
+                cached_symbols
+                | {str(item["symbol"]) for item in rotation_candidates}
+            ),
             observed_at=int(window.end.timestamp()),
+            persist=persist_candidate_state,
         )
+        analyzed_symbols = {
+            str(item.get("symbol") or "")
+            for item in scanned_items
+        }
+        coverage_status = {
+            "status": (
+                "empty"
+                if not candidates
+                else "complete"
+                if len(analyzed_symbols) == len(candidates)
+                else "partial"
+            ),
+            "candidate_symbols": len(candidates),
+            "analyzed_symbols": len(analyzed_symbols),
+            "shared_cache_symbols": len(cached_symbols),
+            "rest_fallback_symbols": len(rotation_candidates),
+            "missing_symbols": max(0, len(candidates) - len(analyzed_symbols)),
+        }
         return {
             "template_id": "TG_FLOW_RADAR",
             "dedup_key": f"flow-radar:{window.end.strftime('%Y%m%d%H%M')}",
@@ -726,6 +971,7 @@ class FlowRadarEngine:
                 scanned_items,
                 window,
                 rotation_status=rotation_status,
+                shared_cache_status=shared_cache_status,
             ),
             "items": rows,
             "snapshots": scanned_items,
@@ -735,9 +981,208 @@ class FlowRadarEngine:
                 "binance": binance.diagnostics(),
                 "binance_confirmation": confirmation_summary(scanned_items),
                 "candidate_rotation": rotation_status,
+                "candidate_filter": dict(self.candidate_filter_diagnostics),
                 "market_cap_ranking": market_cap_status,
+                "shared_market_cache": shared_cache_status,
+                "coverage": coverage_status,
             },
         }
+
+    def _cached_market_items(
+        self,
+        candidates: list[dict[str, Any]],
+        window: ClosedWindow,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Aggregate exact pulse 15m facts into the flow radar's closed window."""
+
+        status: dict[str, Any] = {
+            "status": "unavailable",
+            "source": "market_flow_15m",
+            "candidate_symbols": len(candidates),
+            "cached_symbols": 0,
+            "missing_symbols": len(candidates),
+            "expected_points_per_symbol": 0,
+            "fallback_reasons": {},
+        }
+        interval_sec = int(window.interval_sec)
+        if interval_sec < 900 or interval_sec % 900:
+            status["fallback_reasons"] = {"unsupported_window": len(candidates)}
+            return [], status
+        expected_points = interval_sec // 900
+        status["expected_points_per_symbol"] = expected_points
+        symbols = [
+            str(item.get("symbol") or "").strip().upper()
+            for item in candidates
+            if str(item.get("symbol") or "").strip().upper().endswith("USDT")
+        ]
+        path = self.settings.market_snapshots_db_path
+        if not symbols or not path.exists():
+            status["fallback_reasons"] = {
+                "empty_candidates" if not symbols else "snapshot_db_missing": len(candidates)
+            }
+            return [], status
+
+        placeholders = ",".join("?" for _symbol in symbols)
+        rows: list[sqlite3.Row] = []
+        conn: sqlite3.Connection | None = None
+        try:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=0.2)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(
+                f"""
+                SELECT symbol, observed_at, price, price_change_pct,
+                       oi_usd, oi_change_pct,
+                       spot_inflow_usd, spot_outflow_usd,
+                       futures_inflow_usd, futures_outflow_usd
+                FROM market_snapshots
+                WHERE source = 'market_flow_15m'
+                  AND window_sec = 900
+                  AND observed_at > ? AND observed_at <= ?
+                  AND symbol IN ({placeholders})
+                ORDER BY symbol ASC, observed_at ASC
+                """,
+                (int(window.start.timestamp()), int(window.end.timestamp()), *symbols),
+            ).fetchall()
+        except (OSError, sqlite3.Error):
+            status["fallback_reasons"] = {"snapshot_read_failed": len(candidates)}
+            return [], status
+        finally:
+            if conn is not None:
+                conn.close()
+
+        expected_timestamps = [
+            int(window.start.timestamp()) + 900 * index
+            for index in range(1, expected_points + 1)
+        ]
+        grouped: dict[str, dict[int, sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["symbol"] or ""), {})[
+                int(row["observed_at"] or 0)
+            ] = row
+
+        fallback_reasons: dict[str, int] = {}
+
+        def fallback(reason: str) -> None:
+            fallback_reasons[reason] = fallback_reasons.get(reason, 0) + 1
+
+        cached: list[dict[str, Any]] = []
+        for candidate in candidates:
+            symbol = str(candidate.get("symbol") or "").strip().upper()
+            points = grouped.get(symbol, {})
+            if any(timestamp not in points for timestamp in expected_timestamps):
+                fallback("incomplete_quarters")
+                continue
+            selected = [points[timestamp] for timestamp in expected_timestamps]
+            first = selected[0]
+            last = selected[-1]
+            if (
+                first["price"] is None
+                or first["price_change_pct"] is None
+                or last["price"] is None
+                or first["oi_usd"] is None
+                or first["oi_change_pct"] is None
+                or last["oi_usd"] is None
+            ):
+                fallback("price_or_oi_missing")
+                continue
+            first_price = to_float(first["price"])
+            last_price = to_float(last["price"])
+            first_price_factor = 1.0 + to_float(first["price_change_pct"]) / 100.0
+            first_oi = to_float(first["oi_usd"])
+            last_oi = to_float(last["oi_usd"])
+            first_oi_factor = 1.0 + to_float(first["oi_change_pct"]) / 100.0
+            if (
+                first_price <= 0
+                or last_price <= 0
+                or first_price_factor <= 0
+                or first_oi <= 0
+                or last_oi <= 0
+                or first_oi_factor <= 0
+            ):
+                fallback("invalid_price_or_oi")
+                continue
+            flow_columns = (
+                "spot_inflow_usd",
+                "spot_outflow_usd",
+                "futures_inflow_usd",
+                "futures_outflow_usd",
+            )
+            if any(row[column] is None for row in selected for column in flow_columns):
+                fallback("flow_missing")
+                continue
+
+            price_open = first_price / first_price_factor
+            oi_open = first_oi / first_oi_factor
+            price_pct = (last_price - price_open) / price_open * 100.0
+            oi_pct = (last_oi - oi_open) / oi_open * 100.0
+            spot_inflow = sum(to_float(row["spot_inflow_usd"]) for row in selected)
+            spot_outflow = sum(to_float(row["spot_outflow_usd"]) for row in selected)
+            futures_inflow = sum(to_float(row["futures_inflow_usd"]) for row in selected)
+            futures_outflow = sum(to_float(row["futures_outflow_usd"]) for row in selected)
+            spot_cvd = spot_inflow - spot_outflow
+            futures_cvd = futures_inflow - futures_outflow
+            cached.append({
+                "symbol": symbol,
+                "coin": candidate.get("coin"),
+                "price": last_price,
+                "price_24h": price_pct,
+                "price_window_pct": price_pct,
+                "price_ready": True,
+                "oi_1h": oi_pct,
+                "oi_24h": oi_pct,
+                "oi_change_pct": oi_pct,
+                "oi_ready": True,
+                "oi_points": expected_points + 1,
+                "spot_cvd_delta": spot_cvd,
+                "spot_inflow_usd": spot_inflow,
+                "spot_outflow_usd": spot_outflow,
+                "spot_net_ratio_pct": flow_net_ratio_pct(
+                    spot_cvd,
+                    spot_inflow,
+                    spot_outflow,
+                ),
+                "futures_cvd_delta": futures_cvd,
+                "futures_inflow_usd": futures_inflow,
+                "futures_outflow_usd": futures_outflow,
+                "futures_net_ratio_pct": flow_net_ratio_pct(
+                    futures_cvd,
+                    futures_inflow,
+                    futures_outflow,
+                ),
+                "spot_cvd_ready": True,
+                "futures_cvd_ready": True,
+                "spot_cvd_points": expected_points,
+                "futures_cvd_points": expected_points,
+                "funding_pct": to_float(candidate.get("funding_pct")),
+                "funding_ready": bool(candidate.get("funding_ready")),
+                "quote_volume": abs(to_float(candidate.get("quote_volume"))),
+                "oi_usd": last_oi,
+                "market_cap": candidate.get("market_cap"),
+                "market_cap_source": candidate.get("market_cap_source"),
+                "market_cap_tier": candidate.get("market_cap_tier"),
+                "market_cap_tier_label": candidate.get("market_cap_tier_label"),
+                "liquidity_tier": candidate.get("liquidity_tier"),
+                "liquidity_tier_label": candidate.get("liquidity_tier_label"),
+                "asset_subclass": candidate.get("asset_subclass"),
+                "asset_category_label": candidate.get("asset_category_label"),
+                "flow_data_path": "shared_pulse_15m_cache",
+            })
+
+        status.update({
+            "status": (
+                "complete"
+                if len(cached) == len(candidates)
+                else "partial"
+                if cached
+                else "unavailable"
+            ),
+            "cached_symbols": len(cached),
+            "missing_symbols": max(0, len(candidates) - len(cached)),
+            "fallback_reasons": dict(sorted(fallback_reasons.items())),
+        })
+        return cached, status
 
     def _enrich_cached_market_caps(
         self,
@@ -875,22 +1320,72 @@ class FlowRadarEngine:
         return result
 
     def _candidate_symbols(self, source: BinanceDataSource) -> list[dict[str, Any]]:
-        valid_symbols = {item.get("symbol", "") for item in source.usdt_perp_symbols()}
+        contracts = [
+            item for item in source.usdt_perp_symbols()
+            if isinstance(item, Mapping)
+        ]
+        excluded = {
+            str(value or "").strip().upper()
+            for value in self.settings.excluded_base_assets
+            if str(value or "").strip()
+        }
+        eligible_contracts: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] = {}
+        rejected: dict[str, int] = {}
+        for contract in contracts:
+            symbol = str(contract.get("symbol") or "").strip().upper()
+            allowed, reason, classification = crypto_contract_eligibility(
+                symbol,
+                contract,
+                excluded_base_assets=excluded,
+            )
+            if not allowed:
+                rejected[reason] = rejected.get(reason, 0) + 1
+                continue
+            eligible_contracts[symbol] = (contract, classification)
+
+        spot_catalog_status = "not_supported"
+        spot_symbols: set[str] | None = None
+        if eligible_contracts and hasattr(source, "spot_symbols"):
+            try:
+                raw_spot_symbols = source.spot_symbols()
+                if raw_spot_symbols is None:
+                    spot_catalog_status = "unavailable"
+                else:
+                    spot_symbols = {
+                        str(value or "").strip().upper()
+                        for value in raw_spot_symbols
+                        if str(value or "").strip()
+                    }
+                    spot_catalog_status = "ok"
+            except Exception:
+                spot_catalog_status = "unavailable"
+
+        five_factor_contracts: dict[str, tuple[Mapping[str, Any], dict[str, Any]]] = {}
+        without_spot_pair = 0
+        for symbol, contract_data in eligible_contracts.items():
+            if spot_symbols is not None and symbol not in spot_symbols:
+                without_spot_pair += 1
+                continue
+            five_factor_contracts[symbol] = contract_data
+        valid_symbols = set(five_factor_contracts)
         premium_map = {
             item.get("symbol"): to_float(item.get("lastFundingRate")) * 100
             for item in source.premium_index()
             if item.get("symbol") in valid_symbols
         }
         candidates: list[dict[str, Any]] = []
+        below_liquidity_floor = 0
+        ticker_symbols: set[str] = set()
         for item in source.ticker_24h():
-            symbol = str(item.get("symbol") or "")
+            symbol = str(item.get("symbol") or "").strip().upper()
             if symbol not in valid_symbols:
                 continue
-            coin = symbol.replace("USDT", "")
-            if coin in set(self.settings.excluded_base_assets):
-                continue
+            ticker_symbols.add(symbol)
+            contract, classification = five_factor_contracts[symbol]
+            coin = str(contract.get("baseAsset") or symbol.removesuffix("USDT")).strip().upper()
             quote_volume = to_float(item.get("quoteVolume"))
             if quote_volume < self.settings.radar_min_quote_volume:
+                below_liquidity_floor += 1
                 continue
             price_24h = to_float(item.get("priceChangePercent"))
             candidates.append({
@@ -901,7 +1396,21 @@ class FlowRadarEngine:
                 "quote_volume": quote_volume,
                 "funding_pct": premium_map.get(symbol, 0.0),
                 "funding_ready": symbol in premium_map,
+                "asset_subclass": classification.get("asset_subclass"),
+                "asset_category_label": classification.get("asset_category_label"),
+                "asset_category_short": classification.get("asset_category_short"),
+                "asset_category_source": classification.get("asset_category_source"),
             })
+        self.candidate_filter_diagnostics = {
+            "active_contracts": len(contracts),
+            "eligible_crypto_contracts": len(eligible_contracts),
+            "eligible_five_factor_contracts": len(five_factor_contracts),
+            "rejected": dict(sorted(rejected.items())),
+            "spot_catalog_status": spot_catalog_status,
+            "without_spot_pair": without_spot_pair,
+            "below_liquidity_floor": below_liquidity_floor,
+            "ticker_missing": max(0, len(eligible_contracts) - len(ticker_symbols)),
+        }
         liquidity = sorted(
             candidates,
             key=lambda item: item["quote_volume"],
@@ -1091,6 +1600,7 @@ class FlowRadarEngine:
         *,
         selected_symbols: set[str],
         observed_at: int,
+        persist: bool = True,
     ) -> dict[str, Any]:
         history = self._candidate_history(previous_state)
         entries: list[dict[str, Any]] = []
@@ -1117,6 +1627,8 @@ class FlowRadarEngine:
                 ),
                 "market_cap_source": str(candidate.get("market_cap_source") or ""),
                 "market_cap_observed_at": candidate.get("market_cap_observed_at"),
+                "market_cap_tier": str(candidate.get("market_cap_tier") or "unknown"),
+                "liquidity_tier": str(candidate.get("liquidity_tier") or "low"),
                 "funding_pct": to_float(candidate.get("funding_pct")),
                 "funding_ready": bool(candidate.get("funding_ready")),
                 "selection_reasons": list(candidate.get("selection_reasons") or []),
@@ -1170,21 +1682,9 @@ class FlowRadarEngine:
             "unscanned_count": sum(1 for item in entries if int(item["scan_count"]) == 0),
             "candidates": entries,
         }
-        try:
-            self.store.save(self.settings.flow_candidate_state_path, payload)
-        except Exception:
-            return {
-                "status": "local_error",
-                "error": "flow_candidate_state_write_failed",
-                "pool_mode": "unlimited",
-                "total_candidates": len(entries),
-                "selected_count": len(selected_symbols),
-                "selection_breakdown": breakdown,
-                "next_selection_breakdown": next_breakdown,
-                "next_symbols": next_symbols,
-            }
-        return {
-            "status": "ok",
+        status = {
+            "status": "ok" if persist else "preview",
+            "state_persisted": bool(persist),
             "pool_mode": "unlimited",
             "total_candidates": len(entries),
             "scan_limit": max(1, self.settings.flow_scan_limit),
@@ -1194,6 +1694,23 @@ class FlowRadarEngine:
             "unscanned_count": payload["unscanned_count"],
             "next_symbols": next_symbols,
         }
+        if not persist:
+            return status
+        try:
+            self.store.save(self.settings.flow_candidate_state_path, payload)
+        except Exception:
+            return {
+                "status": "local_error",
+                "state_persisted": False,
+                "error": "flow_candidate_state_write_failed",
+                "pool_mode": "unlimited",
+                "total_candidates": len(entries),
+                "selected_count": len(selected_symbols),
+                "selection_breakdown": breakdown,
+                "next_selection_breakdown": next_breakdown,
+                "next_symbols": next_symbols,
+            }
+        return status
 
     def _format(
         self,
@@ -1202,8 +1719,10 @@ class FlowRadarEngine:
         scanned_items: list[dict[str, Any]],
         window: ClosedWindow,
         rotation_status: dict[str, Any] | None = None,
+        shared_cache_status: dict[str, Any] | None = None,
     ) -> str:
         rotation = rotation_status or {}
+        shared_cache = shared_cache_status or {}
         spot_ready_count = sum(1 for item in scanned_items if item.get("spot_cvd_ready"))
         futures_ready_count = sum(1 for item in scanned_items if item.get("futures_cvd_ready"))
         price_ready_count = sum(1 for item in scanned_items if item.get("price_ready"))
@@ -1218,8 +1737,14 @@ class FlowRadarEngine:
                 net=to_float(item.get("spot_cvd_delta")),
                 ratio_pct=to_float(item.get("spot_net_ratio_pct")),
                 ready=bool(item.get("spot_cvd_ready")),
-                min_abs_usd=self.settings.flow_spot_net_min_usd,
-                min_ratio_pct=self.settings.flow_spot_net_ratio_min_pct,
+                min_abs_usd=to_float(
+                    (item.get("flow_thresholds") or {}).get("spot_net_min_usd"),
+                    default=self.settings.flow_spot_net_min_usd,
+                ),
+                min_ratio_pct=to_float(
+                    (item.get("flow_thresholds") or {}).get("spot_net_ratio_min_pct"),
+                    default=self.settings.flow_spot_net_ratio_min_pct,
+                ),
             )
         )
         futures_active_count = sum(
@@ -1228,11 +1753,19 @@ class FlowRadarEngine:
                 net=to_float(item.get("futures_cvd_delta")),
                 ratio_pct=to_float(item.get("futures_net_ratio_pct")),
                 ready=bool(item.get("futures_cvd_ready")),
-                min_abs_usd=self.settings.flow_futures_net_min_usd,
-                min_ratio_pct=self.settings.flow_futures_net_ratio_min_pct,
+                min_abs_usd=to_float(
+                    (item.get("flow_thresholds") or {}).get("futures_net_min_usd"),
+                    default=self.settings.flow_futures_net_min_usd,
+                ),
+                min_ratio_pct=to_float(
+                    (item.get("flow_thresholds") or {}).get("futures_net_ratio_min_pct"),
+                    default=self.settings.flow_futures_net_ratio_min_pct,
+                ),
             )
         )
         scanned_count = len(scanned_items)
+        cached_count = int(shared_cache.get("cached_symbols") or 0)
+        rest_fallback_count = max(0, scanned_count - cached_count)
         remaining_first_coverage = (
             int(rotation["unscanned_count"])
             if "unscanned_count" in rotation
@@ -1245,9 +1778,17 @@ class FlowRadarEngine:
             "",
             tg_quote("📊 本轮统计"),
             f"全市场候选: {len(candidates)}（无固定数量上限）",
-            f"本轮优先轮换: {scanned_count}/{len(candidates)}",
             (
-                "选币结构: "
+                "资产门禁: "
+                f"合格加密 {int(self.candidate_filter_diagnostics.get('eligible_crypto_contracts') or 0)} | "
+                f"拒绝 {sum(int(value) for value in (self.candidate_filter_diagnostics.get('rejected') or {}).values())} | "
+                f"无现货 {int(self.candidate_filter_diagnostics.get('without_spot_pair') or 0)} | "
+                f"低于流动性底线 {int(self.candidate_filter_diagnostics.get('below_liquidity_floor') or 0)}"
+            ),
+            f"本轮完成分析: {scanned_count}/{len(candidates)}",
+            f"数据复用: 共享15分钟快照 {cached_count} | REST缺口回退 {rest_fallback_count}",
+            (
+                "REST回退结构: "
                 f"固定头部 {int(rotation.get('selection_breakdown', {}).get('fixed') or 0)} | "
                 f"异动优先 {int(rotation.get('selection_breakdown', {}).get('anomaly') or 0)} | "
                 f"轮换补齐 {int(rotation.get('selection_breakdown', {}).get('rotation') or 0)}"
@@ -1284,6 +1825,7 @@ class FlowRadarEngine:
             lines.append(tg_quote(category))
             for item in items[:4]:
                 lines.append(coin_link(item["coin"]))
+                thresholds = item.get("flow_thresholds") or {}
                 lines.append(
                     f"价{pct_cell(item.get('price_window_pct', item.get('price_24h')))} | "
                     f"OI 1h{pct_cell(item['oi_1h'])} | "
@@ -1292,6 +1834,13 @@ class FlowRadarEngine:
                     f"合约 {fmt_cvd(item['futures_cvd_delta'], bool(item.get('futures_cvd_ready')))}"
                     f"/{to_float(item.get('futures_net_ratio_pct')):+.1f}% | "
                     f"费率 {item['funding_pct']:+.3f}%"
+                )
+                lines.append(
+                    "分档: "
+                    f"{tg_escape(item.get('market_cap_tier_label') or '市值待补全')} × "
+                    f"{tg_escape(item.get('liquidity_tier_label') or '低流动性')} | "
+                    f"价格≥{to_float(thresholds.get('price_move_min_pct'), default=self.settings.flow_price_move_min_pct):.2f}% | "
+                    f"OI≥{to_float(thresholds.get('oi_build_min_pct'), default=self.settings.flow_oi_build_min_pct):.2f}%"
                 )
                 lines.append(f"判断: {tg_escape(item['reason'])}")
                 lines.append(f"数据确认: ✅ {tg_escape(confirmation_text(item))}")
@@ -1303,6 +1852,7 @@ class FlowRadarEngine:
                 "",
             ])
         current_symbols = [str(item.get("symbol") or "") for item in scanned_items]
+        displayed_current_symbols = current_symbols[:24]
         next_symbols = [
             str(symbol)
             for symbol in rotation.get("next_symbols") or []
@@ -1311,9 +1861,14 @@ class FlowRadarEngine:
         lines.extend([
             tg_quote("🔄 候选轮换"),
             f"本轮深度扫描（{len(current_symbols)}）",
-            *compact_symbol_lines(current_symbols, per_line=6),
+            *compact_symbol_lines(displayed_current_symbols, per_line=6),
+            (
+                f"其余 {len(current_symbols) - len(displayed_current_symbols)} 个已完成，见下方市值分档。"
+                if len(current_symbols) > len(displayed_current_symbols)
+                else ""
+            ),
             "",
-            f"下一轮优先队列（{len(next_symbols)}）",
+            f"共享快照缺失时的下一轮 REST 回退队列（{len(next_symbols)}）",
             *compact_symbol_lines(next_symbols, per_line=6),
             "",
             *market_cap_candidate_lines(candidates),

@@ -341,6 +341,10 @@ class PulseRegressionTests(unittest.TestCase):
                     "radars.pulse.simple_alert._analyze_symbol",
                     side_effect=analyze,
                 ),
+                patch(
+                    "radars.pulse.simple_alert.persist_pulse_market_rows",
+                    return_value=3,
+                ) as persist_rows,
                 redirect_stdout(StringIO()),
             ):
                 diagnostics = run_cycle(
@@ -356,10 +360,70 @@ class PulseRegressionTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(diagnostics["scan_mode"], "all_eligible_crypto")
         self.assertEqual(diagnostics["coverage_status"], "complete")
+        self.assertEqual(diagnostics["shared_market_cache"], {"status": "saved", "count": 3})
+        persist_rows.assert_called_once()
         assert Source.instance is not None
         self.assertEqual(Source.instance.budget.limits["open_interest_hist"], 43)
         self.assertEqual(Source.instance.budget.limits["klines"], 43)
         self.assertEqual(Source.instance.budget.limits["spot_klines"], 3)
+
+    def test_shared_market_cache_write_failure_does_not_stop_pulse_analysis(self) -> None:
+        class Source:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            @staticmethod
+            def market_caps() -> dict[str, float]:
+                return {}
+
+            @staticmethod
+            def coinpaprika_market_caps() -> dict[str, float]:
+                return {}
+
+            @staticmethod
+            def diagnostics() -> dict[str, object]:
+                return {}
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        item = {
+            "symbol": "AAAUSDT",
+            "base": "AAA",
+            "template": None,
+            "market_snapshot_ready": True,
+        }
+        with TemporaryDirectory() as tmp:
+            settings = Settings(data_dir=Path(tmp))
+            with (
+                patch("radars.pulse.simple_alert.BinanceDataSource", Source),
+                patch(
+                    "radars.pulse.simple_alert._candidate_pool",
+                    return_value=([_test_candidate("AAAUSDT")], {"full_coverage": True}),
+                ),
+                patch("radars.pulse.simple_alert._analyze_symbol", return_value=item),
+                patch(
+                    "radars.pulse.simple_alert.persist_pulse_market_rows",
+                    side_effect=OSError("db unavailable"),
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                diagnostics = run_cycle(
+                    settings,
+                    SimpleNamespace(),  # type: ignore[arg-type]
+                    SimpleAlertConfig(scan_limit=0),
+                    send=False,
+                    confirm_real_send=False,
+                    now_ts=1000,
+                )
+
+        self.assertEqual(diagnostics["analysis_completed"], 1)
+        self.assertEqual(diagnostics["coverage_status"], "complete")
+        self.assertEqual(
+            diagnostics["shared_market_cache"],
+            {"status": "failed", "count": 0, "error": "OSError"},
+        )
 
     def test_divergence_analyzes_each_candidate_once(self) -> None:
         class MainSource:

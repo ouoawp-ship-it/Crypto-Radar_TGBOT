@@ -304,7 +304,7 @@ MANAGED_MIGRATIONS = {
     "FLOW_TOP_N": {
         "old": {"", "5"},
         "new": "8",
-        "note": "资金流 P1.1 七类互斥展示默认扩大为最多 8 条",
+        "note": "资金流 P2.0 七类互斥展示默认扩大为最多 8 条",
     },
     "ANNOUNCEMENT_PAGE_SIZE": {
         "old": {"", "20"},

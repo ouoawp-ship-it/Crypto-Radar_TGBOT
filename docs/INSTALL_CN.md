@@ -151,8 +151,8 @@ bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 通过 Tag CI 的 annotated Tag，并使用独立入口：
 
 ```bash
-bash scripts/deploy_tag.sh --check-tag v2.6.1
-bash scripts/deploy_tag.sh --tag v2.6.1 --yes
+bash scripts/deploy_tag.sh --check-tag v2.7.0
+bash scripts/deploy_tag.sh --tag v2.7.0 --yes
 ```
 
 `--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会

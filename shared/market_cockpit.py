@@ -1111,6 +1111,57 @@ def persist_flow_market_rows(
     return target.append_many(rows)
 
 
+def persist_pulse_market_rows(
+    settings: Settings,
+    items: list[dict[str, Any]],
+    *,
+    observed_at: int,
+    store: MarketSnapshotStore | None = None,
+) -> int:
+    """Publish complete pulse analyses as canonical reusable 15-minute facts."""
+
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("market_snapshot_ready"):
+            continue
+        price_map = item.get("price_map") if isinstance(item.get("price_map"), dict) else {}
+        oi_map = item.get("oi_map") if isinstance(item.get("oi_map"), dict) else {}
+        spot_flow = item.get("spot_flow") if isinstance(item.get("spot_flow"), dict) else {}
+        futures_flow = item.get("futures_flow") if isinstance(item.get("futures_flow"), dict) else {}
+        rows.append({
+            "symbol": item.get("symbol"),
+            "observed_at": int(observed_at),
+            "source": "market_flow_15m",
+            "window_sec": 900,
+            "price": item.get("current_price"),
+            "price_change_pct": price_map.get(3),
+            "change_window_sec": 900,
+            "quote_volume": item.get("quote_volume_24h"),
+            "market_cap": item.get("market_cap"),
+            "oi_usd": item.get("current_oi_usd"),
+            "oi_change_pct": oi_map.get(3),
+            "spot_inflow_usd": item.get("spot_inflow_15m_usd"),
+            "spot_outflow_usd": item.get("spot_outflow_15m_usd"),
+            "spot_flow_usd": spot_flow.get(3),
+            "futures_inflow_usd": item.get("futures_inflow_15m_usd"),
+            "futures_outflow_usd": item.get("futures_outflow_15m_usd"),
+            "futures_flow_usd": futures_flow.get(3),
+            "funding_pct": item.get("funding_pct"),
+            "coverage": {
+                "price": _positive(item.get("current_price")) is not None,
+                "volume": _positive(item.get("quote_volume_24h")) is not None,
+                "market_cap": _positive(item.get("market_cap")) is not None,
+                "oi": _positive(item.get("current_oi_usd")) is not None,
+                "spot_flow": _number(spot_flow.get(3)) is not None,
+                "futures_flow": _number(futures_flow.get(3)) is not None,
+                "funding": _number(item.get("funding_pct")) is not None,
+            },
+            "data_status": "fresh",
+        })
+    target = store or MarketSnapshotStore(settings.market_snapshots_db_path)
+    return target.append_many(rows)
+
+
 def _rank_percentiles(items: list[dict[str, Any]], key: str) -> None:
     available = sorted(
         (abs(float(item[key])), index)
