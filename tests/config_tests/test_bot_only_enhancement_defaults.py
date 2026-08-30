@@ -18,7 +18,7 @@ class BotOnlyEnhancementDefaultTests(unittest.TestCase):
         self.assertEqual(settings.flow_ticker_filter_pct, 2.0)
         self.assertEqual(settings.flow_funding_filter_pct, 0.05)
         self.assertEqual(settings.flow_top_n, 8)
-        self.assertEqual(status["classification_model"], "flow_p1_1")
+        self.assertEqual(status["classification_model"], "flow_p2_0")
         self.assertFalse(status["min_score_effective"])
 
     def test_pulse_is_the_only_active_replacement_for_launch_alerts(self) -> None:

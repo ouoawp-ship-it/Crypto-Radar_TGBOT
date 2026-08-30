@@ -15,6 +15,7 @@ from shared.market_cockpit import (
     load_market_cockpit_windows,
     persist_flow_market_rows,
     persist_market_batch,
+    persist_pulse_market_rows,
 )
 
 
@@ -478,6 +479,49 @@ class MarketCockpitTests(unittest.TestCase):
         self.assertEqual(latest[0]["spot_inflow_usd"], 540_000)
         self.assertEqual(latest[0]["spot_outflow_usd"], 460_000)
         self.assertEqual(latest[0]["futures_flow_usd"], 120_000)
+
+    def test_pulse_full_scan_publishes_reusable_15m_flow_facts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings(tmp)
+            store = MarketSnapshotStore(settings.market_snapshots_db_path)
+
+            count = persist_pulse_market_rows(
+                settings,
+                [{
+                    "symbol": "BTCUSDT",
+                    "market_snapshot_ready": True,
+                    "current_price": 101.0,
+                    "current_oi_usd": 1_010_000.0,
+                    "price_map": {3: 1.0},
+                    "oi_map": {3: 1.0},
+                    "quote_volume_24h": 150_000_000.0,
+                    "market_cap": 2_000_000_000.0,
+                    "spot_flow": {3: 200_000.0},
+                    "spot_inflow_15m_usd": 600_000.0,
+                    "spot_outflow_15m_usd": 400_000.0,
+                    "futures_flow": {3: 300_000.0},
+                    "futures_inflow_15m_usd": 650_000.0,
+                    "futures_outflow_15m_usd": 350_000.0,
+                }, {
+                    "symbol": "INCOMPLETEUSDT",
+                    "market_snapshot_ready": False,
+                }],
+                observed_at=3_600,
+                store=store,
+            )
+
+            conn = sqlite3.connect(settings.market_snapshots_db_path)
+            try:
+                row = conn.execute(
+                    "SELECT source, window_sec, price_change_pct, oi_change_pct, "
+                    "spot_inflow_usd, spot_outflow_usd, futures_flow_usd "
+                    "FROM market_snapshots WHERE symbol = 'BTCUSDT'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(row, ("market_flow_15m", 900, 1.0, 1.0, 600_000.0, 400_000.0, 300_000.0))
 
     def test_readiness_distinguishes_warmup_from_stale_and_reports_progress(self) -> None:
         with TemporaryDirectory() as tmp:

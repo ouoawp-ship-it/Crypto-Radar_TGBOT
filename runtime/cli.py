@@ -1234,8 +1234,12 @@ def push_market_summary(
 
 def run_flow_radar(args: argparse.Namespace) -> int:
     settings, _store, _engine, gateway = make_runtime_for_args(args)
+    real_send = bool(args.send and args.confirm_real_send)
     with BinanceDataSource(settings) as source:
-        flow = FlowRadarEngine(settings).build(source)
+        flow = FlowRadarEngine(settings).build(
+            source,
+            persist_candidate_state=real_send,
+        )
     try:
         saved = persist_flow_market_rows(settings, flow)
         flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}
@@ -1261,8 +1265,12 @@ def run_flow_radar(args: argparse.Namespace) -> int:
 
 
 def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse.Namespace) -> tuple[str, dict[str, object]]:
+    real_send = bool(args.send and args.confirm_real_send)
     with BinanceDataSource(settings) as source:
-        flow = FlowRadarEngine(settings).build(source)
+        flow = FlowRadarEngine(settings).build(
+            source,
+            persist_candidate_state=real_send,
+        )
     try:
         saved = persist_flow_market_rows(settings, flow)
         flow["diagnostics"]["market_snapshot"] = {"status": "saved" if saved else "empty", "count": saved}

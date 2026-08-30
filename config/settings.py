@@ -320,6 +320,7 @@ class Settings:
     accumulation_recent_days: int = 7
     accumulation_max_recent_price_gain_pct: float = 300.0
 
+    # REST fallback only; complete pulse snapshots bypass per-symbol flow REST.
     flow_scan_limit: int = 24
     flow_fixed_top: int = 10
     flow_ticker_filter_pct: float = 2.0
@@ -327,7 +328,7 @@ class Settings:
     flow_radar_enable: bool = True
     flow_candidate_state_path: Path = BASE_DIR / "data" / "flow_candidate_state.json"
     flow_top_n: int = 8
-    # Retained for environment compatibility; flow_p1_1 has no synthetic score.
+    # Retained for environment compatibility; flow_p2_0 has no synthetic score.
     flow_min_score: int = 60
     flow_interval_sec: int = 3600
     flow_close_delay_sec: int = 300
@@ -1638,6 +1639,7 @@ class Settings:
             "flow_radar": {
                 "enabled": self.flow_radar_enable,
                 "scan_limit": self.flow_scan_limit,
+                "scan_limit_scope": "shared_cache_miss_rest_fallback",
                 "fixed_top": self.flow_fixed_top,
                 "ticker_filter_pct": self.flow_ticker_filter_pct,
                 "funding_filter_pct": self.flow_funding_filter_pct,
@@ -1646,7 +1648,7 @@ class Settings:
                 "top_n": self.flow_top_n,
                 "min_score": self.flow_min_score,
                 "min_score_effective": False,
-                "classification_model": "flow_p1_1",
+                "classification_model": "flow_p2_0",
                 "interval_sec": self.flow_interval_sec,
                 "spot_net_ratio_min_pct": self.flow_spot_net_ratio_min_pct,
                 "futures_net_ratio_min_pct": self.flow_futures_net_ratio_min_pct,

@@ -64,6 +64,7 @@ from shared.asset_classification import (  # noqa: E402
     crypto_contract_eligibility,
 )
 from shared.binance_data import BinanceDataSource  # noqa: E402
+from shared.market_cockpit import persist_pulse_market_rows  # noqa: E402
 from radars.pulse.chart import (  # noqa: E402
     DISPLAY_CANDLE_LIMIT,
     render_pulse_chart_png,
@@ -504,13 +505,24 @@ def _series_pct(series: list[float], offset: int) -> float | None:
     return None
 
 
-def _window_flow(taker_quote: list[float], quote: list[float], bars: int) -> float | None:
+def _window_flow_parts(
+    taker_quote: list[float],
+    quote: list[float],
+    bars: int,
+) -> tuple[float, float, float] | None:
     if len(taker_quote) < bars or len(quote) < bars:
         return None
-    return sum(
-        2.0 * t - q
-        for t, q in zip(taker_quote[-bars:], quote[-bars:])
-    )
+    selected = list(zip(taker_quote[-bars:], quote[-bars:]))
+    if any(taker < 0 or total < 0 or taker > total for taker, total in selected):
+        return None
+    inflow = sum(taker for taker, _total in selected)
+    outflow = sum(total - taker for taker, total in selected)
+    return inflow - outflow, inflow, outflow
+
+
+def _window_flow(taker_quote: list[float], quote: list[float], bars: int) -> float | None:
+    parts = _window_flow_parts(taker_quote, quote, bars)
+    return parts[0] if parts is not None else None
 
 
 def _volume_multiple(quote: list[float], bars: int) -> float | None:
@@ -811,6 +823,8 @@ def _analyze_symbol(
         bars: _window_flow(spot_takers, spot_quotes, bars)
         for _label, bars in _FLOW_WINDOWS
     }
+    futures_15_parts = _window_flow_parts(takers, quotes, 3)
+    spot_15_parts = _window_flow_parts(spot_takers, spot_quotes, 3)
 
     futures_15 = futures_flow.get(3)
     spot_15 = spot_flow.get(3)
@@ -907,6 +921,10 @@ def _analyze_symbol(
         "volume_map": volume_map,
         "futures_flow": futures_flow,
         "spot_flow": spot_flow,
+        "spot_inflow_15m_usd": spot_15_parts[1] if spot_15_parts is not None else None,
+        "spot_outflow_15m_usd": spot_15_parts[2] if spot_15_parts is not None else None,
+        "futures_inflow_15m_usd": futures_15_parts[1] if futures_15_parts is not None else None,
+        "futures_outflow_15m_usd": futures_15_parts[2] if futures_15_parts is not None else None,
         "cvd_net_15m": cvd_net,
         "cvd_gross_15m": cvd_gross_15,
         "cvd_ratio_15m_pct": cvd_ratio_15m_pct,
@@ -917,6 +935,14 @@ def _analyze_symbol(
         "market_cap_source": candidate.market_cap_source,
         "asset_category": dict(candidate.classification),
         "long_short_ratio": None,
+        "market_snapshot_ready": bool(
+            closes
+            and oi_values
+            and price_map.get(3) is not None
+            and oi_map.get(3) is not None
+            and spot_15_parts is not None
+            and futures_15_parts is not None
+        ),
     }
 
 
@@ -1685,6 +1711,22 @@ def run_cycle(
                         triggered.append(item)
         completed.sort(key=lambda item: str(item.get("symbol") or ""))
         triggered.sort(key=lambda item: str(item.get("symbol") or ""))
+        try:
+            shared_cache_count = persist_pulse_market_rows(
+                settings,
+                completed,
+                observed_at=int(window.end.timestamp()),
+            )
+            shared_market_cache = {
+                "status": "saved" if shared_cache_count else "empty",
+                "count": shared_cache_count,
+            }
+        except Exception as exc:
+            shared_market_cache = {
+                "status": "failed",
+                "count": 0,
+                "error": type(exc).__name__,
+            }
         for item in triggered:
             item["long_short_ratio"] = _long_short_ratio(source, item["symbol"])
             item["tv_url"] = f"https://www.tradingview.com/chart/?symbol=BINANCE:{item['symbol']}"
@@ -1799,6 +1841,7 @@ def run_cycle(
             "completed_within_15m": duration_sec < 15 * 60,
             "cycle_duration_sec": duration_sec,
             "universe": universe,
+            "shared_market_cache": shared_market_cache,
             "pushes": pushes,
             "state_active_symbols": len(state),
             "source": source.diagnostics(),
