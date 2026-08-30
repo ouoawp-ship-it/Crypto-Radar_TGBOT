@@ -9,6 +9,18 @@ from config import BASE_DIR, Settings
 
 
 class BotOnlyEnhancementDefaultTests(unittest.TestCase):
+    def test_flow_p1_defaults_and_legacy_score_status_are_explicit(self) -> None:
+        settings = Settings()
+        status = settings.redacted_status()["flow_radar"]
+
+        self.assertEqual(settings.flow_scan_limit, 24)
+        self.assertEqual(settings.flow_fixed_top, 10)
+        self.assertEqual(settings.flow_ticker_filter_pct, 2.0)
+        self.assertEqual(settings.flow_funding_filter_pct, 0.05)
+        self.assertEqual(settings.flow_top_n, 8)
+        self.assertEqual(status["classification_model"], "flow_p1_1")
+        self.assertFalse(status["min_score_effective"])
+
     def test_pulse_is_the_only_active_replacement_for_launch_alerts(self) -> None:
         settings = Settings()
         self.assertFalse(settings.funding_flip_oi_enable)

@@ -1,11 +1,11 @@
 # Crypto Radar Telegram Bot
 
-这是一个只面向 Telegram 信号推送的加密市场监控项目。v2.5.0 在不改变旧版 4H/1D/1W 箱体与三推规则的前提下，新增独立的自适应 1D 盘整产品：日线冻结结构、4H 闭合预警、1D 收盘确认和全市场日线地图各自标明周期与覆盖状态。盘整突破与三推信号不再展示未经历史校准的 `/100` 分数，而是给出可解释的质量标签、判断依据和原始数值。脉冲雷达的严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流保持不变。
+这是一个只面向 Telegram 信号推送的加密市场监控项目。v2.6.0 将资金流雷达升级为 P1.1：以七类互斥规则替代未经校准的 `/100` 评分，并用“固定成交额头部 + 有界异动优先 + 永久轮换保底”兼顾重点币与全候选覆盖。v2.5.0 的自适应 1D 盘整产品、脉冲雷达严格加密资产池、全量 15 分钟覆盖以及跨服务统一缓存/限流保持不变。
 
 ## 核心功能
 
 - 脉冲雷达：严格排除传统金融、稳定币和未知资产；对全部合格加密合约执行 15 分钟价格/OI/CVD 六分类异动提醒，加上每 2 小时对成交额前 200 个合约的持仓价格背离汇总。
-- 资金流雷达：组合现货/合约主动流、OI、费率和价格变化生成多因子信号。
+- 资金流雷达：组合现货/合约主动流、OI、费率和闭合窗口价格变化，按七类互斥规则输出信号；取消伪精度评分，并通过固定头部、异动优先和公平轮换完成候选扫描。
 - 资金摘要：定时输出负费率、综合、埋伏、动量与新币候选榜。
 - 资金费率警报：监控多交易所极端费率、分歧、衰减与结束状态。
 - 盘整突破雷达：默认关闭；旧路径继续扫描 4H、日线、周线的 24/72/240 根冻结箱体。独立的自适应 1D 产品从 20–500 根候选长度选择最长合格箱体，用冻结日线边界接收 4H 闭合预警，并等待 1D 收盘确认；完成同一目标日 K 的全市场覆盖后再汇总一次日线地图。每条信号附带价格 K 线、成交量和 MACD 图，并以质量标签和具体理由代替 `/100` 评分。
@@ -85,6 +85,7 @@ python main.py database-backup
 python main.py telegram-test
 python main.py telegram-topic-setup --topic-template TG_RADAR_SUMMARY --send --confirm-real-send
 python main.py telegram-topic-refresh --topic-template TG_LAUNCH_ALERT --send --confirm-real-send
+python main.py telegram-topic-refresh --topic-template TG_FLOW_RADAR --send --confirm-real-send
 python main.py telegram-topic-refresh --topic-template TG_CONSOLIDATION_BREAKOUT --send --confirm-real-send
 python main.py private-control
 python main.py once
@@ -106,6 +107,12 @@ python main.py live --send --confirm-real-send
 普通推送不会自动建话题或刷新置顶说明。创建/修复话题必须通过中文菜单或
 `telegram-topic-setup` 明确执行；任一核心雷达缺少专属话题时，真实发送会
 安全阻断，不会退回群主界面。
+
+资金流 P1.1 默认每轮深扫 24 个候选：成交额前 10 个固定进入；24 小时价格绝对
+变化不少于 2% 或资金费率绝对值不少于 0.05% 的币优先进入，但当候选池超过本轮
+上限时，始终至少保留四分之一名额按历史扫描次数和上次扫描时间公平轮换。异动币
+再多也不能长期挤掉普通候选。默认最多展示 8 条，七类按固定优先级互斥判断，
+`FLOW_MIN_SCORE` 仅为旧环境兼容保留，不再参与过滤。
 
 盘整突破雷达使用独立模板 `TG_CONSOLIDATION_BREAKOUT` 和严格话题路由，升级后
 默认关闭，不会改变现有生产流量；三推和自适应日线产品分别使用默认关闭的子
@@ -194,8 +201,8 @@ bash scripts/install_server.sh
 bash scripts/update_server.sh --check
 bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 # 正式生产版本只从通过 CI 的 annotated Tag 部署：
-bash scripts/deploy_tag.sh --check-tag v2.5.0
-bash scripts/deploy_tag.sh --tag v2.5.0 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.6.0
+bash scripts/deploy_tag.sh --tag v2.6.0 --yes --refresh-pulse-topic-intro
 ```
 
 生产环境仅保留：

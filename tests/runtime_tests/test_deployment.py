@@ -376,6 +376,34 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME=2000000", text)
         self.assertNotIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME", result["updated"])
 
+    def test_sync_migrates_legacy_flow_display_limit(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text("FLOW_TOP_N=5\n", encoding="utf-8")
+            example.write_text("FLOW_TOP_N=8\n", encoding="utf-8")
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("FLOW_TOP_N=8", text)
+        self.assertIn("FLOW_TOP_N", result["updated"])
+
+    def test_sync_preserves_custom_flow_display_limit(self) -> None:
+        module = load_sync_module()
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env.oi"
+            example = Path(tmp) / ".env.oi.example"
+            env.write_text("FLOW_TOP_N=12\n", encoding="utf-8")
+            example.write_text("FLOW_TOP_N=8\n", encoding="utf-8")
+
+            result = module.sync_env(env, example)
+            text = env.read_text(encoding="utf-8")
+
+        self.assertIn("FLOW_TOP_N=12", text)
+        self.assertNotIn("FLOW_TOP_N", result["updated"])
+
     def test_sync_backs_up_and_atomically_replaces_environment_file(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:

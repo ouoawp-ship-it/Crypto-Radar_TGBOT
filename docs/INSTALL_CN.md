@@ -151,13 +151,21 @@ bash scripts/update_server.sh --yes --refresh-pulse-topic-intro
 通过 Tag CI 的 annotated Tag，并使用独立入口：
 
 ```bash
-bash scripts/deploy_tag.sh --check-tag v2.5.0
-bash scripts/deploy_tag.sh --tag v2.5.0 --yes --refresh-pulse-topic-intro
+bash scripts/deploy_tag.sh --check-tag v2.6.0
+bash scripts/deploy_tag.sh --tag v2.6.0 --yes --refresh-pulse-topic-intro
 ```
 
 `--refresh-pulse-topic-intro` 是显式真实 Telegram 操作；省略时更新脚本不会
 刷新置顶说明。执行时脚本内部仍同时提供两重真实发送确认。该参数只刷新脉冲
 雷达；盘整突破说明使用上面的独立刷新命令。
+
+v2.6.0 资金流 P1.1 升级后，再显式刷新已有资金流话题说明：
+
+```bash
+.venv/bin/python main.py telegram-topic-refresh \
+  --topic-template TG_FLOW_RADAR \
+  --send --confirm-real-send
+```
 
 该入口会在停服后备份私有配置、运行状态、数据库和 systemd 定义；部署失败
 自动回滚。它不会打印或用示例值覆盖服务器密钥。完整门禁和人工回滚命令见

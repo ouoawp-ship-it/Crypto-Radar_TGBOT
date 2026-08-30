@@ -4,7 +4,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from html import escape
-from typing import Any
+from typing import Any, Mapping
 
 from shared.binance_confirmation import (
     apply_binance_confirmation,
@@ -399,17 +399,12 @@ def _flow_direction(
     return 1 if net > 0 else -1
 
 
-def _bounded_strength(value: float, threshold: float, points: int) -> int:
-    threshold = max(abs(threshold), 1e-9)
-    return min(points, max(0, round(abs(value) / threshold * (points / 2))))
-
-
 def flow_classification(
     item: dict[str, Any],
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or Settings()
-    model_version = "flow_p0_1"
+    model_version = "flow_p1_1"
     required = {
         "价格": bool(item.get("price_ready", True)),
         "oi": bool(item.get("oi_ready", True)),
@@ -423,30 +418,26 @@ def flow_classification(
             "Binance 现货主动成交" in missing
             and "Binance 合约主动成交" in missing
         ):
-            reason = "Binance 主动成交数据缺失；本轮不评分"
+            reason = "Binance 主动成交数据缺失；本轮不参与分类"
         elif "Binance 资金费率" in missing:
-            reason = "Binance 资金费率缺失；本轮不评分"
+            reason = "Binance 资金费率缺失；本轮不参与分类"
         else:
-            reason = f"核心数据缺失：{', '.join(missing)}；本轮不评分"
+            reason = f"核心数据缺失：{', '.join(missing)}；本轮不参与分类"
         return {
             "model_version": model_version,
             "category": "数据不足",
-            "score": 0,
             "reason": reason,
             "eligible": False,
             "gates": required,
             "spot_net_ratio_pct": 0.0,
             "futures_net_ratio_pct": 0.0,
-            "category_margin": 0,
-            "alternatives": [],
         }
 
-    price = to_float(item.get("price_24h"))
+    price = to_float(item.get("price_window_pct", item.get("price_24h")))
     oi = to_float(item.get("oi_1h", item.get("oi_24h")))
     spot_net = to_float(item.get("spot_cvd_delta"))
     futures_net = to_float(item.get("futures_cvd_delta"))
     funding = to_float(item.get("funding_pct"))
-    quote_volume = abs(to_float(item.get("quote_volume")))
     spot_ratio = to_float(
         item.get(
             "spot_net_ratio_pct",
@@ -486,182 +477,132 @@ def flow_classification(
     oi_build = max(0.01, settings.flow_oi_build_min_pct)
     oi_unwind = min(-0.01, settings.flow_oi_unwind_max_pct)
 
-    def score_candidate(
-        *,
-        include_spot: bool = True,
-        include_futures: bool = True,
-        funding_strength: float = 0.0,
-        oi_value: float | None = None,
-    ) -> int:
-        score = 60
-        score += _bounded_strength(price, move, 10)
-        score += _bounded_strength(oi if oi_value is None else oi_value, oi_build, 10)
-        if include_spot:
-            score += _bounded_strength(
-                spot_ratio,
-                settings.flow_spot_net_ratio_min_pct,
-                8,
-            )
-        if include_futures:
-            score += _bounded_strength(
-                futures_ratio,
-                settings.flow_futures_net_ratio_min_pct,
-                8,
-            )
-        score += min(6, max(0, round(funding_strength)))
-        if quote_volume >= 100_000_000:
-            score += 4
-        elif quote_volume >= 30_000_000:
-            score += 2
-        return min(100, score)
-
-    candidates: list[dict[str, Any]] = []
-
-    def add(
-        category: str,
-        passed: bool,
-        reason: str,
-        *,
-        include_spot: bool = True,
-        include_futures: bool = True,
-        funding_strength: float = 0.0,
-        oi_value: float | None = None,
-    ) -> None:
+    rules = (
+        (
+            "恐慌下跌",
+            price <= -move
+            and oi >= oi_build
+            and spot_direction < 0
+            and futures_direction < 0,
+            "价格下跌、OI增加，现货与合约主动卖出均通过双门槛，属于增仓下跌风险",
+        ),
+        (
+            "真启动候选",
+            price >= move
+            and oi >= oi_build
+            and spot_direction > 0
+            and futures_direction > 0
+            and funding <= 0.05,
+            "价格与OI同步上升，现货和合约主动买入均通过净额与净占比门槛，费率未过热",
+        ),
+        (
+            "吸筹观察",
+            abs(price) <= flat
+            and oi >= oi_build
+            and spot_direction > 0
+            and futures_direction >= 0
+            and funding <= 0.03,
+            "价格仍在窄幅区间，OI增加且现货主动买入通过双门槛，合约未出现显著主动卖出",
+        ),
+        (
+            "空头燃料",
+            funding <= -0.03
+            and oi >= oi_build
+            and futures_direction < 0
+            and price > -flat,
+            "负费率、增仓和合约主动卖出同时成立，但价格尚未明显下跌，属于潜在挤空燃料",
+        ),
+        (
+            "挤空/止损",
+            price >= move
+            and oi <= oi_unwind
+            and futures_direction > 0
+            and funding <= 0.05,
+            "价格上涨而OI明显下降，合约主动买入增强，更接近空头止损或回补推动",
+        ),
+        (
+            "合约拉盘",
+            price >= move
+            and oi >= oi_build
+            and futures_direction > 0
+            and spot_direction <= 0
+            and funding >= 0,
+            "价格与OI上涨主要由合约主动买入推动，现货买盘未通过门槛，持续性需要谨慎",
+        ),
+        (
+            "诱多/派发",
+            price >= move
+            and spot_direction < 0
+            and (futures_direction > 0 or funding >= 0.03)
+            and oi < oi_build,
+            "价格上涨但现货主动卖出占优，合约买盘或正费率托住价格，存在诱多或派发风险",
+        ),
+    )
+    for category, passed, reason in rules:
         if passed:
-            candidates.append({
+            return {
+                "model_version": model_version,
                 "category": category,
-                "score": score_candidate(
-                    include_spot=include_spot,
-                    include_futures=include_futures,
-                    funding_strength=funding_strength,
-                    oi_value=oi_value,
+                "reason": (
+                    f"{reason}；现货净占比 {spot_ratio:+.2f}%，"
+                    f"合约净占比 {futures_ratio:+.2f}%"
                 ),
-                "reason": reason,
-            })
-
-    add(
-        "真启动候选",
-        price >= move
-        and oi >= oi_build
-        and spot_direction > 0
-        and futures_direction > 0
-        and funding <= 0.05,
-        "价格与OI同步上升，现货和合约主动买入均通过净额与净占比门槛，费率未过热",
-        funding_strength=max(0.0, (0.05 - funding) / 0.01),
-    )
-    add(
-        "吸筹观察",
-        abs(price) <= flat
-        and oi >= oi_build
-        and spot_direction > 0
-        and futures_direction >= 0
-        and funding <= 0.03,
-        "价格仍在窄幅区间，OI增加且现货主动买入通过双门槛，合约未出现显著主动卖出",
-        include_futures=futures_direction != 0,
-        funding_strength=max(0.0, (0.03 - funding) / 0.01),
-    )
-    add(
-        "空头燃料",
-        funding <= -0.03
-        and oi >= oi_build
-        and price > -flat
-        and futures_direction < 0,
-        "负费率、增仓和合约主动卖出同时成立，但价格尚未明显下跌，属于潜在挤空燃料",
-        include_spot=spot_direction != 0,
-        funding_strength=abs(funding) / 0.03 * 2,
-    )
-    add(
-        "合约拉盘",
-        price >= move
-        and oi >= oi_build
-        and futures_direction > 0
-        and spot_direction <= 0
-        and funding >= 0,
-        "价格与OI上涨主要由合约主动买入推动，现货买盘未通过门槛，持续性需要谨慎",
-        include_spot=spot_direction != 0,
-        funding_strength=funding / 0.02,
-    )
-    add(
-        "挤空/止损",
-        price >= move
-        and oi <= oi_unwind
-        and futures_direction > 0
-        and funding <= 0.05,
-        "价格上涨而OI明显下降，合约主动买入增强，更接近空头止损或回补推动",
-        include_spot=spot_direction != 0,
-        funding_strength=max(0.0, (0.05 - funding) / 0.01),
-        oi_value=abs(oi),
-    )
-    add(
-        "诱多/派发",
-        price >= move
-        and spot_direction < 0
-        and (futures_direction > 0 or funding >= 0.03)
-        and oi < oi_build,
-        "价格上涨但现货主动卖出占优，合约买盘或正费率托住价格，存在诱多或派发风险",
-        funding_strength=max(0.0, funding / 0.02),
-    )
-    add(
-        "恐慌下跌",
-        price <= -move
-        and oi >= oi_build
-        and spot_direction < 0
-        and futures_direction < 0,
-        "价格下跌、OI增加，现货与合约主动卖出均通过双门槛，属于增仓下跌风险",
-        funding_strength=max(0.0, abs(min(funding, 0.0)) / 0.02),
-    )
-
-    candidates.sort(key=lambda row: int(row["score"]), reverse=True)
-    if not candidates:
-        return {
-            "model_version": model_version,
-            "category": "观察",
-            "score": 0,
-            "reason": (
-                f"未通过任一完整核心门禁；现货净占比 {spot_ratio:+.2f}%，"
-                f"合约净占比 {futures_ratio:+.2f}%"
-            ),
-            "eligible": False,
-            "gates": required,
-            "spot_net_ratio_pct": spot_ratio,
-            "futures_net_ratio_pct": futures_ratio,
-            "category_margin": 0,
-            "alternatives": [],
-        }
-    best = candidates[0]
-    margin = int(best["score"]) - (
-        int(candidates[1]["score"]) if len(candidates) > 1 else 0
-    )
+                "eligible": True,
+                "gates": required,
+                "spot_net_ratio_pct": spot_ratio,
+                "futures_net_ratio_pct": futures_ratio,
+            }
     return {
         "model_version": model_version,
-        "category": str(best["category"]),
-        "score": int(best["score"]),
+        "category": "观察",
         "reason": (
-            f"{best['reason']}；现货净占比 {spot_ratio:+.2f}%，"
+            f"未通过任一完整核心门禁；现货净占比 {spot_ratio:+.2f}%，"
             f"合约净占比 {futures_ratio:+.2f}%"
         ),
-        "eligible": True,
+        "eligible": False,
         "gates": required,
         "spot_net_ratio_pct": spot_ratio,
         "futures_net_ratio_pct": futures_ratio,
-        "category_margin": margin,
-        "alternatives": [
-            {"category": row["category"], "score": row["score"]}
-            for row in candidates[1:3]
-        ],
     }
 
 
 def flow_category(
     item: dict[str, Any],
     settings: Settings | None = None,
-) -> tuple[str, int, str]:
+) -> tuple[str, str]:
     classification = flow_classification(item, settings)
     return (
         str(classification["category"]),
-        int(classification["score"]),
         str(classification["reason"]),
     )
+
+
+_FLOW_CATEGORY_ORDER = (
+    "真启动候选",
+    "吸筹观察",
+    "空头燃料",
+    "合约拉盘",
+    "挤空/止损",
+    "诱多/派发",
+    "恐慌下跌",
+)
+
+
+def _flow_display_key(item: Mapping[str, Any]) -> tuple[int, float]:
+    """Sort each category by the evidence most relevant to that category."""
+    category = str(item.get("category") or "")
+    rank = (
+        _FLOW_CATEGORY_ORDER.index(category)
+        if category in _FLOW_CATEGORY_ORDER
+        else len(_FLOW_CATEGORY_ORDER)
+    )
+    if category == "挤空/止损":
+        return rank, to_float(item.get("oi_1h"))
+    if category == "诱多/派发":
+        return rank, to_float(item.get("spot_cvd_delta"))
+    if category == "空头燃料":
+        return rank, -abs(to_float(item.get("funding_pct")))
+    return rank, -to_float(item.get("oi_1h"))
 
 
 class FlowRadarEngine:
@@ -713,6 +654,7 @@ class FlowRadarEngine:
                 "coin": coin,
                 "price": candidate.get("price"),
                 "price_24h": price_pct,
+                "price_window_pct": price_pct,
                 "price_ready": price_ready,
                 "oi_1h": oi_1h,
                 # Compatibility alias for persisted snapshots created before P1.
@@ -740,13 +682,10 @@ class FlowRadarEngine:
             classification = flow_classification(item, self.settings)
             item.update({
                 "category": classification["category"],
-                "score": classification["score"],
                 "reason": classification["reason"],
                 "flow_model_version": classification["model_version"],
                 "flow_model_eligible": classification["eligible"],
                 "flow_core_gates": classification["gates"],
-                "category_margin": classification["category_margin"],
-                "category_alternatives": classification["alternatives"],
             })
             scanned_items.append(item)
 
@@ -766,13 +705,11 @@ class FlowRadarEngine:
             )
             if (
                 item.get("flow_model_eligible")
-                and
-                item["score"] >= self.settings.flow_min_score
                 and item.get("quality_gate") == "allow"
             ):
                 rows.append(item)
 
-        rows.sort(key=lambda item: item["score"], reverse=True)
+        rows.sort(key=_flow_display_key)
         rows = rows[: max(1, self.settings.flow_top_n)]
         rotation_status = self._save_candidate_state(
             candidates,
@@ -1034,22 +971,118 @@ class FlowRadarEngine:
             }
         return history
 
+    @staticmethod
+    def _fair_rotation_order(
+        candidates: list[dict[str, Any]],
+        history: dict[str, dict[str, int]],
+    ) -> list[dict[str, Any]]:
+        return sorted(
+            candidates,
+            key=lambda item: (
+                history.get(str(item.get("symbol") or ""), {}).get("scan_count", 0),
+                history.get(str(item.get("symbol") or ""), {}).get("last_scanned_at", 0),
+                int(item.get("priority_rank") or 0),
+                str(item.get("symbol") or ""),
+            ),
+        )
+
+    def _order_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        history: dict[str, dict[str, int]],
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Select fixed leaders, bounded anomalies, then a starvation-proof rotation."""
+        if not candidates:
+            return [], {"fixed": 0, "anomaly": 0, "rotation": 0}
+
+        effective_limit = min(len(candidates), max(1, limit))
+        rotation_reserve = (
+            max(1, effective_limit // 4)
+            if len(candidates) > effective_limit
+            else 0
+        )
+        fixed_capacity = max(0, effective_limit - rotation_reserve)
+        fixed_top = min(
+            max(0, self.settings.flow_fixed_top),
+            fixed_capacity,
+        )
+        ticker_filter = max(0.0, self.settings.flow_ticker_filter_pct)
+        funding_filter = max(0.0, self.settings.flow_funding_filter_pct)
+
+        liquidity = sorted(
+            candidates,
+            key=lambda item: (
+                -to_float(item.get("quote_volume")),
+                str(item.get("symbol") or ""),
+            ),
+        )
+        fixed = liquidity[:fixed_top]
+        fixed_symbols = {str(item["symbol"]) for item in fixed}
+
+        def is_anomaly(item: dict[str, Any]) -> bool:
+            symbol = str(item.get("symbol") or "")
+            if symbol in fixed_symbols:
+                return False
+            price_move = abs(to_float(item.get("price_24h")))
+            funding_move = (
+                abs(to_float(item.get("funding_pct")))
+                if item.get("funding_ready")
+                else 0.0
+            )
+            return price_move >= ticker_filter or funding_move >= funding_filter
+
+        anomalies = sorted(
+            (item for item in candidates if is_anomaly(item)),
+            key=lambda item: (
+                -abs(to_float(item.get("price_24h"))),
+                -abs(to_float(item.get("funding_pct"))),
+                -to_float(item.get("quote_volume")),
+                str(item.get("symbol") or ""),
+            ),
+        )
+        anomaly_capacity = max(
+            0,
+            effective_limit - len(fixed) - rotation_reserve,
+        )
+        priority_anomalies = anomalies[:anomaly_capacity]
+        priority_symbols = {
+            str(item["symbol"])
+            for item in priority_anomalies
+        }
+
+        rotation_pool = [
+            item
+            for item in candidates
+            if str(item.get("symbol") or "") not in fixed_symbols
+            and str(item.get("symbol") or "") not in priority_symbols
+        ]
+        rotation_capacity = max(
+            0,
+            effective_limit - len(fixed) - len(priority_anomalies),
+        )
+        rotation = self._fair_rotation_order(rotation_pool, history)[:rotation_capacity]
+        ordered = fixed + priority_anomalies + rotation
+        return ordered, {
+            "fixed": len(fixed),
+            "anomaly": len(priority_anomalies),
+            "rotation": len(rotation),
+        }
+
     def _rotation_candidates(
         self,
         candidates: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         state = self._load_candidate_state()
         history = self._candidate_history(state)
-        ordered = sorted(
+        ordered, breakdown = self._order_candidates(
             candidates,
-            key=lambda item: (
-                history.get(str(item["symbol"]), {}).get("scan_count", 0),
-                history.get(str(item["symbol"]), {}).get("last_scanned_at", 0),
-                int(item.get("priority_rank") or 0),
-                str(item["symbol"]),
-            ),
+            history,
+            max(1, self.settings.flow_scan_limit),
         )
-        return ordered[: max(1, self.settings.flow_scan_limit)], state
+        state = dict(state) if isinstance(state, dict) else {}
+        state["selection_breakdown"] = breakdown
+        return ordered, state
 
     def _save_candidate_state(
         self,
@@ -1091,27 +1124,48 @@ class FlowRadarEngine:
                 "last_scanned_at": last_scanned_at or None,
                 "selected_this_cycle": selected,
             })
-        next_order = sorted(
-            entries,
-            key=lambda item: (
-                int(item["scan_count"]),
-                int(item.get("last_scanned_at") or 0),
-                int(item["priority_rank"]),
-                str(item["symbol"]),
-            ),
+        next_history = {
+            str(entry["symbol"]): {
+                "scan_count": int(entry["scan_count"]),
+                "last_scanned_at": int(entry.get("last_scanned_at") or 0),
+            }
+            for entry in entries
+        }
+        next_order, next_breakdown = self._order_candidates(
+            candidates,
+            next_history,
+            max(1, self.settings.flow_scan_limit),
         )
+        next_symbols = [str(item["symbol"]) for item in next_order]
+        next_symbol_set = set(next_symbols)
+        remaining = self._fair_rotation_order(
+            [
+                candidate
+                for candidate in candidates
+                if str(candidate["symbol"]) not in next_symbol_set
+            ],
+            next_history,
+        )
+        full_next_order = next_order + remaining
         next_rank = {
             str(item["symbol"]): rank
-            for rank, item in enumerate(next_order, start=1)
+            for rank, item in enumerate(full_next_order, start=1)
         }
         for entry in entries:
             entry["next_rotation_rank"] = next_rank[str(entry["symbol"])]
+        breakdown = (
+            previous_state.get("selection_breakdown")
+            if isinstance(previous_state, dict)
+            else None
+        )
+        breakdown = breakdown if isinstance(breakdown, dict) else next_breakdown
         payload = {
             "schema_version": FLOW_CANDIDATE_STATE_SCHEMA_VERSION,
             "updated_at": observed_at,
             "pool_mode": "unlimited",
             "total_candidates": len(entries),
             "scan_limit": max(1, self.settings.flow_scan_limit),
+            "selection_breakdown": breakdown,
             "selected_count": len(selected_symbols),
             "unscanned_count": sum(1 for item in entries if int(item["scan_count"]) == 0),
             "candidates": entries,
@@ -1125,22 +1179,20 @@ class FlowRadarEngine:
                 "pool_mode": "unlimited",
                 "total_candidates": len(entries),
                 "selected_count": len(selected_symbols),
-                "next_symbols": [
-                    str(item["symbol"])
-                    for item in next_order[: max(1, self.settings.flow_scan_limit)]
-                ],
+                "selection_breakdown": breakdown,
+                "next_selection_breakdown": next_breakdown,
+                "next_symbols": next_symbols,
             }
         return {
             "status": "ok",
             "pool_mode": "unlimited",
             "total_candidates": len(entries),
             "scan_limit": max(1, self.settings.flow_scan_limit),
+            "selection_breakdown": breakdown,
+            "next_selection_breakdown": next_breakdown,
             "selected_count": len(selected_symbols),
             "unscanned_count": payload["unscanned_count"],
-            "next_symbols": [
-                str(item["symbol"])
-                for item in next_order[: max(1, self.settings.flow_scan_limit)]
-            ],
+            "next_symbols": next_symbols,
         }
 
     def _format(
@@ -1194,6 +1246,12 @@ class FlowRadarEngine:
             tg_quote("📊 本轮统计"),
             f"全市场候选: {len(candidates)}（无固定数量上限）",
             f"本轮优先轮换: {scanned_count}/{len(candidates)}",
+            (
+                "选币结构: "
+                f"固定头部 {int(rotation.get('selection_breakdown', {}).get('fixed') or 0)} | "
+                f"异动优先 {int(rotation.get('selection_breakdown', {}).get('anomaly') or 0)} | "
+                f"轮换补齐 {int(rotation.get('selection_breakdown', {}).get('rotation') or 0)}"
+            ),
             f"首次覆盖待轮换: {remaining_first_coverage}",
             f"入选信号: {len(rows)}",
             f"数据确认: 完整 {confirmed_count}/{scanned_count} | 缺项 {scanned_count - confirmed_count}/{scanned_count}",
@@ -1203,12 +1261,12 @@ class FlowRadarEngine:
         ]
         if scanned_count and (price_ready_count < scanned_count or oi_ready_count < scanned_count):
             lines.extend([
-                "⚠️ 部分价格/OI 未覆盖完整统计窗口；这些币不会进入资金流评分。",
+                "⚠️ 部分价格/OI 未覆盖完整统计窗口；这些币不会进入资金流分类。",
                 "",
             ])
         if scanned_count and (spot_ready_count < scanned_count or futures_ready_count < scanned_count):
             lines.extend([
-                "⚠️ 部分主动成交数据缺失；缺失项不会按 0 参与资金流评分。",
+                "⚠️ 部分主动成交数据缺失；缺失项不会按 0 参与资金流分类。",
                 "",
             ])
         if scanned_count and (spot_active_count < spot_ready_count or futures_active_count < futures_ready_count):
@@ -1227,7 +1285,7 @@ class FlowRadarEngine:
             for item in items[:4]:
                 lines.append(coin_link(item["coin"]))
                 lines.append(
-                    f"{item['score']}分 | 价{pct_cell(item['price_24h'])} | "
+                    f"价{pct_cell(item.get('price_window_pct', item.get('price_24h')))} | "
                     f"OI 1h{pct_cell(item['oi_1h'])} | "
                     f"现货 {fmt_cvd(item['spot_cvd_delta'], bool(item.get('spot_cvd_ready')))}"
                     f"/{to_float(item.get('spot_net_ratio_pct')):+.1f}% | "
@@ -1260,6 +1318,9 @@ class FlowRadarEngine:
             "",
             *market_cap_candidate_lines(candidates),
             "",
-            "说明：市值排名不改变候选资格和轮换顺序；只有本轮 24 个完成五因子深度扫描。",
+            (
+                "说明：市值排名不改变候选资格和轮换顺序；"
+                f"只有本轮 {scanned_count} 个完成五因子深度扫描。"
+            ),
         ])
         return "\n".join(lines)
