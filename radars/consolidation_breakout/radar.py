@@ -18,6 +18,7 @@ from radars.consolidation_breakout.daily import (
     DailyHorizonSpec,
     select_daily_candidate,
 )
+from shared.asset_classification import crypto_contract_eligibility
 from shared.binance_data import BinanceDataSource
 from shared.storage import JsonStore
 
@@ -1808,11 +1809,13 @@ class ConsolidationBreakoutRadar:
         }
 
     def _universe(self, source: BinanceDataSource) -> list[str]:
-        valid = {
-            str(item.get("symbol") or "").upper()
-            for item in source.usdt_perp_symbols()
-            if isinstance(item, dict) and str(item.get("symbol") or "").upper().endswith("USDT")
-        }
+        metadata_by_symbol: dict[str, dict[str, Any]] = {}
+        for item in source.usdt_perp_symbols():
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol.endswith("USDT"):
+                metadata_by_symbol[symbol] = item
         excluded = {
             str(asset or "").upper()
             for asset in getattr(self.settings, "excluded_base_assets", ())
@@ -1823,8 +1826,12 @@ class ConsolidationBreakoutRadar:
         )
         eligible = {
             symbol
-            for symbol in valid
-            if symbol[:-4] not in excluded
+            for symbol, metadata in metadata_by_symbol.items()
+            if crypto_contract_eligibility(
+                symbol,
+                metadata,
+                excluded_base_assets=excluded,
+            )[0]
         }
         if minimum <= 0:
             return sorted(eligible)

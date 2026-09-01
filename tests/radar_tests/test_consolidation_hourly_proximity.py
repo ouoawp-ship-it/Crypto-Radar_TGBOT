@@ -23,6 +23,22 @@ END_CLOSE = (
 ) - 1
 
 
+def contract_metadata(
+    symbol: str,
+    *,
+    underlying_type: str = "COIN",
+) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "baseAsset": symbol[:-4],
+        "quoteAsset": "USDT",
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "underlyingType": underlying_type,
+        "underlyingSubType": [],
+    }
+
+
 def kline_row(
     open_time: int,
     duration_ms: int,
@@ -110,8 +126,8 @@ class IntervalSource:
         self.ticker = ticker
         self.calls: list[tuple[str, str, int]] = []
 
-    def usdt_perp_symbols(self) -> list[dict[str, str]]:
-        return [{"symbol": self.symbol}]
+    def usdt_perp_symbols(self) -> list[dict[str, Any]]:
+        return [contract_metadata(self.symbol)]
 
     def ticker_24h(self) -> list[dict[str, str]]:
         return [{
@@ -137,17 +153,18 @@ class MultiIntervalSource:
         tickers: dict[str, float],
         *,
         failures: set[tuple[str, str]] | None = None,
+        contracts: list[dict[str, Any]] | None = None,
     ) -> None:
         self.rows = rows
         self.tickers = tickers
         self.failures = failures or set()
+        self.contracts = contracts
         self.calls: list[tuple[str, str, int]] = []
 
-    def usdt_perp_symbols(self) -> list[dict[str, str]]:
-        return [
-            {"symbol": symbol}
-            for symbol in sorted(self.tickers)
-        ]
+    def usdt_perp_symbols(self) -> list[dict[str, Any]]:
+        if self.contracts is not None:
+            return copy.deepcopy(self.contracts)
+        return [contract_metadata(symbol) for symbol in sorted(self.tickers)]
 
     def ticker_24h(self) -> list[dict[str, str]]:
         return [
@@ -232,6 +249,7 @@ def seed_hourly_boxes(
     store: JsonStore,
     settings: Settings,
     *,
+    symbol: str = "TESTUSDT",
     last_close: int = END_CLOSE,
     horizons: tuple[str, ...] = ("long",),
     upper: float = 101.0,
@@ -252,12 +270,12 @@ def seed_hourly_boxes(
             lower=lower,
             atr=atr,
         )
-        tracks[f"TESTUSDT|1h|{spec.name}"] = active_track(box, last_close)
+        tracks[f"{symbol}|1h|{spec.name}"] = active_track(box, last_close)
         if not selected_box or spec.length > int(selected_box["base_bars"]):
             selected_box = box
-            selected_box_id = _box_id("TESTUSDT", spec.name, box)
+            selected_box_id = _box_id(symbol, spec.name, box)
         if monitor is not None:
-            tracks[f"TESTUSDT|1h|{spec.name}|proximity"] = copy.deepcopy(
+            tracks[f"{symbol}|1h|{spec.name}|proximity"] = copy.deepcopy(
                 monitor
             )
     store.save(settings.consolidation_hourly_proximity_state_path, {
@@ -273,6 +291,57 @@ def now_for(rows: list[list[Any]]) -> int:
 
 
 class ConsolidationHourlyProximityTests(unittest.TestCase):
+    def test_universe_rejects_non_crypto_and_keeps_trx(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = settings_for(Path(tmp))
+            source = MultiIntervalSource(
+                {},
+                {
+                    "MYSTERYUSDT": 1.0,
+                    "TRXUSDT": 0.3,
+                    "USDCUSDT": 1.0,
+                    "XAUUSDT": 2_500.0,
+                },
+                contracts=[
+                    contract_metadata("USDCUSDT"),
+                    contract_metadata("XAUUSDT"),
+                    contract_metadata("MYSTERYUSDT", underlying_type=""),
+                    contract_metadata("TRXUSDT", underlying_type=""),
+                ],
+            )
+
+            universe = ConsolidationHourlyProximityRadar(settings)._universe(
+                source
+            )
+
+        self.assertEqual(universe, ["TRXUSDT"])
+
+    def test_old_usdc_track_never_enters_fast_monitor_or_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root)
+            store = JsonStore(root)
+            seed_hourly_boxes(store, settings, symbol="USDCUSDT")
+            rows_15m = fifteen_minute_rows(
+                [100.70, 100.75, 100.82, 100.90]
+            )
+            source = IntervalSource(
+                hourly_rows(final_closes=[100.9]),
+                rows_15m,
+                symbol="USDCUSDT",
+            )
+
+            result = ConsolidationHourlyProximityRadar(
+                settings,
+                store,
+            ).build(source, now_ms=now_for(rows_15m))
+
+        self.assertEqual(result["events"], [])
+        self.assertEqual(result["diagnostics"]["candidate_count"], 0)
+        self.assertEqual(result["diagnostics"]["active_box_symbol_count"], 0)
+        self.assertEqual(result["diagnostics"]["fast_monitor_count"], 0)
+        self.assertEqual(source.calls, [])
+
     def test_disabled_makes_no_market_requests(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

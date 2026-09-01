@@ -40,6 +40,7 @@ from radars.consolidation_breakout.hourly_proximity import (
     ConsolidationHourlyProximityRadar,
 )
 from radars.consolidation_breakout.daily_digest import (
+    CANDIDATE_GATE_VERSION,
     ConsolidationDailyDigestAccumulator,
     empty_daily_digest_state,
     select_digest_signal_structures,
@@ -1371,6 +1372,18 @@ def _process_consolidation_daily_digest(
     ))
     try:
         state = store.load(state_path, empty_daily_digest_state())
+        raw_pending = (
+            state.get("pending_digests", [])
+            if isinstance(state, Mapping)
+            else []
+        )
+        legacy_pending_count = sum(
+            1
+            for item in raw_pending
+            if isinstance(item, Mapping)
+            and str(item.get("candidate_gate_version") or "")
+            != CANDIDATE_GATE_VERSION
+        ) if isinstance(raw_pending, list) else 0
         accumulator = ConsolidationDailyDigestAccumulator(
             state if isinstance(state, Mapping) else None,
             max_items=int(getattr(
@@ -1392,7 +1405,15 @@ def _process_consolidation_daily_digest(
                 4096,
                 int(getattr(settings, "tg_push_split_limit", 3800)),
             )),
+            migration_now_ts=now_ts,
         )
+        diagnostics["candidate_gate_version"] = CANDIDATE_GATE_VERSION
+        diagnostics["invalidated_pending_count"] = legacy_pending_count
+        if legacy_pending_count:
+            diagnostics["invalidation_reason"] = (
+                "candidate_universe_tightened"
+            )
+            store.save(state_path, accumulator.snapshot())
         raw_batch = result.get("daily_digest_batch")
         batch = raw_batch if isinstance(raw_batch, Mapping) else {}
         target_close_time = int(batch.get("target_close_time") or 0)
@@ -1410,6 +1431,14 @@ def _process_consolidation_daily_digest(
         )
         batch_ingested = False
         if target_close_time > 0 and expected_symbols:
+            reconciliation = accumulator.reconcile_symbols(
+                expected_symbols,
+                now_ts=now_ts,
+            )
+            diagnostics["candidate_reconciliation"] = reconciliation
+            # Make a legacy-active migration durable before ingestion or any
+            # later Telegram request can fail the process.
+            store.save(state_path, accumulator.snapshot())
             try:
                 accumulator.ingest_batch(
                     target_close_time=target_close_time,
@@ -1443,6 +1472,14 @@ def _process_consolidation_daily_digest(
         diagnostics["snapshot_count"] = len(
             recent_snapshots if isinstance(recent_snapshots, list) else []
         )
+
+        if (
+            not batch_ingested
+            and legacy_pending_count > 0
+            and not pending_items
+        ):
+            diagnostics["status"] = "candidate_universe_tightened"
+            return None, diagnostics
 
         if shadow_mode:
             diagnostics["status"] = (

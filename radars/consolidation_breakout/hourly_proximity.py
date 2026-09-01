@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from config import Settings
 from radars.consolidation_breakout.daily import DAILY_HORIZONS
+from shared.asset_classification import crypto_contract_eligibility
 from shared.binance_data import BinanceDataSource
 from shared.storage import JsonStore
 
@@ -588,16 +589,25 @@ class ConsolidationHourlyProximityRadar:
 
     def _universe(self, source: BinanceDataSource) -> list[str]:
         excluded = {
-            str(asset or "").upper()
+            str(asset or "").strip().upper()
             for asset in getattr(self.settings, "excluded_base_assets", ())
+            if str(asset or "").strip()
         }
-        return sorted({
-            str(item.get("symbol") or "").upper()
-            for item in source.usdt_perp_symbols()
-            if isinstance(item, dict)
-            and str(item.get("symbol") or "").upper().endswith("USDT")
-            and str(item.get("symbol") or "").upper()[:-4] not in excluded
-        })
+        eligible: set[str] = set()
+        for contract in source.usdt_perp_symbols():
+            if not isinstance(contract, Mapping):
+                continue
+            symbol = str(contract.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            allowed, _reason, _classification = crypto_contract_eligibility(
+                symbol,
+                contract,
+                excluded_base_assets=excluded,
+            )
+            if allowed:
+                eligible.add(symbol)
+        return sorted(eligible)
 
     @staticmethod
     def _rotation_batch(
