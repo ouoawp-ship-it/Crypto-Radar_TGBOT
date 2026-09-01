@@ -191,10 +191,24 @@ class KlineSource:
         self.calls: list[tuple[str, str, int]] = []
 
     @staticmethod
-    def usdt_perp_symbols() -> list[dict[str, str]]:
+    def usdt_perp_symbols() -> list[dict[str, Any]]:
         return [
-            {"symbol": "TESTUSDT"},
-            {"symbol": "XAUUSDT"},
+            {
+                "symbol": "TESTUSDT",
+                "baseAsset": "TEST",
+                "quoteAsset": "USDT",
+                "contractType": "PERPETUAL",
+                "status": "TRADING",
+                "underlyingType": "COIN",
+            },
+            {
+                "symbol": "XAUUSDT",
+                "baseAsset": "XAU",
+                "quoteAsset": "USDT",
+                "contractType": "PERPETUAL",
+                "status": "TRADING",
+                "underlyingType": "COIN",
+            },
         ]
 
     @staticmethod
@@ -216,14 +230,28 @@ class UniverseSource:
         rows_by_symbol: dict[str, list[list[Any]]],
         *,
         quote_volumes: dict[str, float] | None = None,
+        metadata_by_symbol: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.symbols = list(symbols)
         self.rows_by_symbol = rows_by_symbol
         self.quote_volumes = quote_volumes or {}
+        self.metadata_by_symbol = metadata_by_symbol or {}
         self.calls: list[tuple[str, str, int]] = []
 
-    def usdt_perp_symbols(self) -> list[dict[str, str]]:
-        return [{"symbol": symbol} for symbol in self.symbols]
+    def usdt_perp_symbols(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for symbol in self.symbols:
+            metadata: dict[str, Any] = {
+                "symbol": symbol,
+                "baseAsset": symbol[:-4],
+                "quoteAsset": "USDT",
+                "contractType": "PERPETUAL",
+                "status": "TRADING",
+                "underlyingType": "COIN",
+            }
+            metadata.update(self.metadata_by_symbol.get(symbol, {}))
+            items.append(metadata)
+        return items
 
     def ticker_24h(self) -> list[dict[str, str]]:
         return [
@@ -1161,6 +1189,39 @@ class ConsolidationBreakoutRadarTests(unittest.TestCase):
             structure["structure_quality"] in {"strong", "standard", "watch"}
             for structure in observation["structures"]
         ))
+
+    def test_universe_rejects_non_crypto_assets_from_daily_digest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = utc_daily_range_rows()
+            symbols = ["TRXUSDT", "USDCUSDT", "ACMEUSDT", "MYSTERYUSDT"]
+            source = UniverseSource(
+                symbols,
+                {symbol: rows for symbol in symbols},
+                metadata_by_symbol={
+                    "ACMEUSDT": {"underlyingType": "STOCK"},
+                    "MYSTERYUSDT": {"underlyingType": ""},
+                },
+            )
+            settings = settings_for(
+                root,
+                consolidation_breakout_min_quote_volume=0,
+                excluded_base_assets=(),
+                consolidation_daily_product_enable=True,
+                consolidation_daily_shadow_mode=True,
+            )
+
+            result = ConsolidationBreakoutRadar(
+                settings,
+                JsonStore(root),
+            ).build(source, now_ms=closed_now(rows))  # type: ignore[arg-type]
+
+        self.assertEqual(set(source.called_symbols), {"TRXUSDT"})
+        self.assertEqual(result["diagnostics"]["universe_count"], 1)
+        self.assertEqual(
+            result["daily_digest_batch"]["expected_symbols"],
+            ["TRXUSDT"],
+        )
 
     def test_zero_volume_floor_does_not_depend_on_ticker_snapshot(self) -> None:
         class MissingTickerSource(UniverseSource):

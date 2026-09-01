@@ -1444,6 +1444,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 "闭合4H K线只负责越界早期预警，不等同于1D确认",
                 "不是08:00定点推送",
                 "箱体与三推卡片均取消未经回测校准的/100评分",
+                "稳定币、传统金融映射和未知资产不会进入候选池",
                 "不会因短/中/长期三个箱体重复",
                 "三推背离独立开关当前已启用",
                 "随信号K线图",
@@ -1464,7 +1465,7 @@ class TelegramGatewayTests(unittest.TestCase):
                 self.assertIn(phrase, intro)
             self.assertEqual(
                 topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-08-30-consolidation-breakout-v7",
+                "2026-09-01-consolidation-breakout-v8",
             )
             self.assertLessEqual(len(plain_fallback(intro)), 4096)
 

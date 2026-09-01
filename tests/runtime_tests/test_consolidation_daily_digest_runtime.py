@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from config import Settings
 from radars.consolidation_breakout.daily_digest import (
+    CANDIDATE_GATE_VERSION,
     ConsolidationDailyDigestAccumulator,
 )
 from runtime import cli
@@ -241,6 +242,12 @@ class ConsolidationDailyDigestRuntimeTests(unittest.TestCase):
                 failed_state["pending_digests"][0]["delivery"]["status"],
                 "failed",
             )
+            self.assertEqual(
+                failed_state["pending_digests"][0][
+                    "candidate_gate_version"
+                ],
+                CANDIDATE_GATE_VERSION,
+            )
 
             gateway.send.reset_mock()
             gateway.send.return_value = PushResult(
@@ -312,6 +319,65 @@ class ConsolidationDailyDigestRuntimeTests(unittest.TestCase):
         self.assertEqual(
             diagnostics["daily_digest"]["status"],
             "batch_unavailable",
+        )
+
+    def test_no_batch_invalidates_legacy_pending_instead_of_sending(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = settings_for(root, shadow=False)
+            store = JsonStore(root)
+            gateway = Mock(spec=TelegramGateway)
+            accumulator = ConsolidationDailyDigestAccumulator()
+            pending = accumulator.ingest_batch(
+                target_close_time=TARGET_MS,
+                expected_symbols=["USDCUSDT"],
+                observations=[{
+                    "symbol": "USDCUSDT",
+                    "target_close_time": TARGET_MS,
+                    "status": "success",
+                    "structures": [daily_structure("USDCUSDT")],
+                }],
+                now_ts=100,
+            )
+            legacy_state = accumulator.snapshot()
+            del legacy_state["pending_digests"][0][
+                "candidate_gate_version"
+            ]
+            store.save(
+                settings.consolidation_daily_digest_state_path,
+                legacy_state,
+            )
+
+            with patch.object(cli.time, "time", return_value=1_000):
+                status, diagnostics, _radar = self.run_cycle(
+                    settings=settings,
+                    store=store,
+                    gateway=gateway,
+                    result=radar_result(),
+                    runtime_args=args(send=True, confirm=True),
+                )
+            state = store.load(
+                settings.consolidation_daily_digest_state_path,
+                {},
+            )
+
+        self.assertEqual(status, "skipped")
+        gateway.send.assert_not_called()
+        self.assertEqual(
+            diagnostics["daily_digest"]["status"],
+            "candidate_universe_tightened",
+        )
+        self.assertEqual(
+            diagnostics["daily_digest"]["invalidated_pending_count"],
+            1,
+        )
+        self.assertEqual(state["pending_digests"], [])
+        archived = state["recent_snapshots"][0]
+        self.assertEqual(archived["digest_id"], pending["digest_id"])
+        self.assertEqual(archived["archive"]["status"], "invalidated")
+        self.assertEqual(
+            archived["archive"]["reason"],
+            "candidate_universe_tightened",
         )
 
     def test_runtime_limits_message_and_signal_records_but_archives_full_snapshot(self) -> None:

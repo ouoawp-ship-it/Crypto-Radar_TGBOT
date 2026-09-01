@@ -9,6 +9,9 @@ from typing import Any, Iterable, Mapping
 
 
 STATE_SCHEMA_VERSION = 1
+# Bump this when candidate-eligibility semantics tighten so frozen state can
+# migrate once without changing the bounded audit-state schema.
+CANDIDATE_GATE_VERSION = "strict_crypto_contract_v1"
 TELEGRAM_TEXT_LIMIT = 4096
 DEFAULT_DIGEST_TEXT_LIMIT = 3800
 SNAPSHOT_ARCHIVE_LIMIT = 7
@@ -491,6 +494,7 @@ class ConsolidationDailyDigestAccumulator:
         snapshot_archive_limit: int = SNAPSHOT_ARCHIVE_LIMIT,
         delivery_retry_base_sec: int = DELIVERY_RETRY_BASE_SEC,
         delivery_retry_max_sec: int = DELIVERY_RETRY_MAX_SEC,
+        migration_now_ts: int = 0,
     ) -> None:
         self.max_items = max(0, int(max_items))
         self.max_retry_rounds = max(0, int(max_retry_rounds))
@@ -508,6 +512,7 @@ class ConsolidationDailyDigestAccumulator:
         self._state = self._normalize_state(
             state,
             snapshot_archive_limit=self.snapshot_archive_limit,
+            migration_now_ts=max(0, int(migration_now_ts)),
         )
 
     @staticmethod
@@ -515,6 +520,7 @@ class ConsolidationDailyDigestAccumulator:
         state: Mapping[str, Any] | None,
         *,
         snapshot_archive_limit: int,
+        migration_now_ts: int,
     ) -> dict[str, Any]:
         if not isinstance(state, Mapping) or _as_int(
             state.get("schema_version")
@@ -536,7 +542,7 @@ class ConsolidationDailyDigestAccumulator:
                 "recent_snapshots"
             ][-snapshot_archive_limit:]
         pending = state.get("pending_digests")
-        pending_items = (
+        raw_pending_items = (
             [
                 copy.deepcopy(dict(item))
                 for item in pending
@@ -545,6 +551,21 @@ class ConsolidationDailyDigestAccumulator:
             if isinstance(pending, list)
             else []
         )
+        pending_items: list[dict[str, Any]] = []
+        for item in raw_pending_items:
+            if str(item.get("candidate_gate_version") or "") == (
+                CANDIDATE_GATE_VERSION
+            ):
+                pending_items.append(item)
+                continue
+            _append_recent_snapshot(
+                normalized,
+                item,
+                status="invalidated",
+                reason="candidate_universe_tightened",
+                archived_at=migration_now_ts,
+                limit=snapshot_archive_limit,
+            )
         pending_items.sort(key=_snapshot_sort_key)
         for older in pending_items[:-1]:
             _append_recent_snapshot(
@@ -579,6 +600,67 @@ class ConsolidationDailyDigestAccumulator:
 
     def snapshot(self) -> dict[str, Any]:
         return copy.deepcopy(self._state)
+
+    def reconcile_symbols(
+        self,
+        current_eligible: Iterable[Any],
+        *,
+        now_ts: int,
+    ) -> dict[str, Any]:
+        """Fail closed when a persisted active batch predates the candidate gate."""
+
+        eligible = set(_normalize_symbols(current_eligible))
+        result: dict[str, Any] = {
+            "candidate_gate_version": CANDIDATE_GATE_VERSION,
+            "active_current": False,
+            "active_reconciled": False,
+            "active_reset": False,
+            "removed_symbols": 0,
+            "remaining_symbols": 0,
+            "reconciled_at": max(0, int(now_ts)),
+        }
+        active = self._state.get("active")
+        if not isinstance(active, Mapping):
+            return result
+
+        active_dict = active if isinstance(active, dict) else dict(active)
+        previous_expected = set(_normalize_symbols(
+            active_dict.get("expected_symbols", [])
+        ))
+        if str(active_dict.get("candidate_gate_version") or "") == (
+            CANDIDATE_GATE_VERSION
+        ):
+            result["active_current"] = True
+            result["remaining_symbols"] = len(previous_expected)
+            return result
+
+        retained = previous_expected & eligible
+        result.update({
+            "active_reconciled": True,
+            "removed_symbols": len(previous_expected - retained),
+            "remaining_symbols": len(retained),
+        })
+        if not retained:
+            self._state["active"] = None
+            result["active_reset"] = True
+            return result
+
+        raw_observations = active_dict.get("observations")
+        observations = (
+            raw_observations
+            if isinstance(raw_observations, Mapping)
+            else {}
+        )
+        active_dict["expected_symbols"] = sorted(retained)
+        active_dict["observations"] = {
+            symbol: copy.deepcopy(dict(observation))
+            for raw_symbol, observation in observations.items()
+            if (symbol := _normalize_symbol(raw_symbol)) in retained
+            and isinstance(observation, Mapping)
+        }
+        active_dict["candidate_gate_version"] = CANDIDATE_GATE_VERSION
+        self._state["active"] = active_dict
+        return result
 
     def pending_digest(self, now_ts: int | None = None) -> dict[str, Any] | None:
         pending = self._state["pending_digests"]
@@ -664,6 +746,10 @@ class ConsolidationDailyDigestAccumulator:
         if round_completed and not str(round_token or "").strip():
             raise ValueError("round_token is required for a completed round")
 
+        # Runtime persists this reconciliation before ingestion. Keeping the
+        # state-machine guard here also makes direct callers fail closed.
+        self.reconcile_symbols(expected, now_ts=now_ts)
+
         active = self._state.get("active")
         if isinstance(active, Mapping):
             active_target = _as_int(active.get("target_close_time"))
@@ -698,6 +784,7 @@ class ConsolidationDailyDigestAccumulator:
             active = {
                 "target_close_time": target_close_time,
                 "expected_symbols": expected,
+                "candidate_gate_version": CANDIDATE_GATE_VERSION,
                 "started_at": now_ts,
                 "observations": {},
                 "completed_round_tokens": [],
@@ -829,6 +916,7 @@ class ConsolidationDailyDigestAccumulator:
             "structure_timeframe": "1d",
             "trigger_timeframe": "1d",
             "trigger_kind": "daily_close_digest",
+            "candidate_gate_version": CANDIDATE_GATE_VERSION,
             "delivery": {
                 "attempt_count": 0,
                 "next_attempt_at": 0,
@@ -914,6 +1002,7 @@ class ConsolidationDailyDigestAccumulator:
 
 
 __all__ = [
+    "CANDIDATE_GATE_VERSION",
     "ConsolidationDailyDigestAccumulator",
     "DEFAULT_DIGEST_TEXT_LIMIT",
     "DELIVERY_RETRY_BASE_SEC",

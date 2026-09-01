@@ -301,7 +301,7 @@ TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
     "TG_FLOW_RADAR": "2026-08-31-flow-p2-v1",
-    "TG_CONSOLIDATION_BREAKOUT": "2026-08-30-consolidation-breakout-v7",
+    "TG_CONSOLIDATION_BREAKOUT": "2026-09-01-consolidation-breakout-v8",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -512,7 +512,7 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
             "这里专门推送已确认收线的盘整突破、跌破、真假验证和三推背离结构，并汇总每日1D盘整地图。",
             "",
             "<b>扫描与结构周期</b>",
-            "- 默认覆盖 Binance USDⓈ-M 全部活跃 USDT 永续合约，不按24小时成交额淘汰长尾标的。",
+            "- 默认覆盖 Binance USDⓈ-M 全部严格认定为加密货币的活跃 USDT 永续合约；稳定币、传统金融映射和未知资产不会进入候选池。",
             f"- 按合约代码稳定轮转，每批最多 {int(settings.consolidation_breakout_scan_limit)} 个；轮转进度会持久化，重启后继续。",
             "- 以约520个合约、每批40个、每5分钟一批计算，完整覆盖约需70分钟；达到条件的标的在所属批次立即推送。",
             f"- 旧多周期路径保持不变：{timeframes} 各自识别24 / 72 / 240根冻结箱体。",

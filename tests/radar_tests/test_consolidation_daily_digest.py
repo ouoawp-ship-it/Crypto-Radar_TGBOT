@@ -4,6 +4,7 @@ import json
 import unittest
 
 from radars.consolidation_breakout.daily_digest import (
+    CANDIDATE_GATE_VERSION,
     ConsolidationDailyDigestAccumulator,
     DEFAULT_DIGEST_TEXT_LIMIT,
     DELIVERY_RETRY_MAX_SEC,
@@ -98,6 +99,10 @@ class ConsolidationDailyDigestAccumulatorTests(unittest.TestCase):
         active = accumulator.snapshot()["active"]
         self.assertEqual(active["expected_symbols"], ["AAAUSDT", "BBBUSDT"])
         self.assertEqual(sorted(active["observations"]), ["AAAUSDT"])
+        self.assertEqual(
+            active["candidate_gate_version"],
+            CANDIDATE_GATE_VERSION,
+        )
 
         pending = accumulator.ingest_batch(
             target_close_time=TARGET_MS,
@@ -119,6 +124,10 @@ class ConsolidationDailyDigestAccumulatorTests(unittest.TestCase):
         self.assertEqual(
             [item["symbol"] for item in pending["structures"]],
             ["AAAUSDT", "BBBUSDT"],
+        )
+        self.assertEqual(
+            pending["candidate_gate_version"],
+            CANDIDATE_GATE_VERSION,
         )
         self.assertIsNone(accumulator.snapshot()["active"])
 
@@ -498,18 +507,119 @@ class ConsolidationDailyDigestAccumulatorTests(unittest.TestCase):
         self.assertLessEqual(max(delays), DELIVERY_RETRY_MAX_SEC)
         self.assertEqual(delays[-1], DELIVERY_RETRY_MAX_SEC)
 
-    def test_legacy_pending_queue_keeps_latest_and_archives_older(self) -> None:
+    def test_reconcile_prunes_legacy_active_and_preserves_current_frozen_universe(self) -> None:
+        state = empty_daily_digest_state()
+        state["active"] = {
+            "target_close_time": TARGET_MS,
+            "expected_symbols": ["AAAUSDT", "USDCUSDT"],
+            "started_at": 100,
+            "observations": {
+                "AAAUSDT": observation("AAAUSDT"),
+                "USDCUSDT": observation("USDCUSDT"),
+            },
+            "completed_round_tokens": [],
+            "failed_rounds": 0,
+        }
+        accumulator = ConsolidationDailyDigestAccumulator(state)
+
+        result = accumulator.reconcile_symbols(["AAAUSDT"], now_ts=200)
+        active = accumulator.snapshot()["active"]
+
+        self.assertTrue(result["active_reconciled"])
+        self.assertEqual(result["removed_symbols"], 1)
+        self.assertFalse(result["active_reset"])
+        self.assertEqual(active["expected_symbols"], ["AAAUSDT"])
+        self.assertEqual(sorted(active["observations"]), ["AAAUSDT"])
+        self.assertEqual(
+            active["candidate_gate_version"],
+            CANDIDATE_GATE_VERSION,
+        )
+
+        current = accumulator.reconcile_symbols(["BBBUSDT"], now_ts=201)
+        self.assertTrue(current["active_current"])
+        self.assertFalse(current["active_reconciled"])
+        self.assertFalse(current["active_reset"])
+        self.assertEqual(
+            accumulator.snapshot()["active"]["expected_symbols"],
+            ["AAAUSDT"],
+        )
+
+        legacy_only_removed = empty_daily_digest_state()
+        legacy_only_removed["active"] = {
+            "target_close_time": TARGET_MS,
+            "expected_symbols": ["USDCUSDT"],
+            "started_at": 100,
+            "observations": {
+                "USDCUSDT": observation("USDCUSDT"),
+            },
+            "completed_round_tokens": [],
+            "failed_rounds": 0,
+        }
+        reset_accumulator = ConsolidationDailyDigestAccumulator(
+            legacy_only_removed
+        )
+        reset = reset_accumulator.reconcile_symbols(
+            ["BBBUSDT"],
+            now_ts=201,
+        )
+        self.assertTrue(reset["active_reset"])
+        self.assertIsNone(reset_accumulator.snapshot()["active"])
+        self.assertEqual(
+            reset_accumulator.snapshot()["pending_digests"],
+            [],
+        )
+
+        rebuilt = reset_accumulator.ingest_batch(
+            target_close_time=TARGET_MS,
+            expected_symbols=["BBBUSDT"],
+            observations=[observation("BBBUSDT")],
+            now_ts=202,
+        )
+        self.assertEqual(rebuilt["coverage"]["expected"], 1)
+        self.assertEqual(rebuilt["coverage"]["successful"], 1)
+        self.assertEqual(
+            rebuilt["candidate_gate_version"],
+            CANDIDATE_GATE_VERSION,
+        )
+
+    def test_legacy_pending_is_invalidated_and_preserved_for_audit(self) -> None:
+        state = empty_daily_digest_state()
+        state["pending_digests"] = [{
+            "digest_id": "unsafe",
+            "target_close_time": TARGET_MS,
+            "structures": [],
+        }]
+
+        accumulator = ConsolidationDailyDigestAccumulator(
+            state,
+            migration_now_ts=777,
+        )
+        normalized = accumulator.snapshot()
+
+        self.assertEqual(normalized["pending_digests"], [])
+        self.assertEqual(len(normalized["recent_snapshots"]), 1)
+        archived = normalized["recent_snapshots"][0]
+        self.assertEqual(archived["digest_id"], "unsafe")
+        self.assertEqual(archived["archive"], {
+            "status": "invalidated",
+            "reason": "candidate_universe_tightened",
+            "archived_at": 777,
+        })
+
+    def test_current_gate_pending_queue_keeps_latest_and_archives_older(self) -> None:
         state = empty_daily_digest_state()
         state["pending_digests"] = [
             {
                 "digest_id": "old",
                 "target_close_time": TARGET_MS,
                 "structures": [],
+                "candidate_gate_version": CANDIDATE_GATE_VERSION,
             },
             {
                 "digest_id": "new",
                 "target_close_time": TARGET_MS + DAY_MS,
                 "structures": [],
+                "candidate_gate_version": CANDIDATE_GATE_VERSION,
             },
         ]
         accumulator = ConsolidationDailyDigestAccumulator(state)
