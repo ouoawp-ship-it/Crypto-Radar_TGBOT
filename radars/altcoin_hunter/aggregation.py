@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from .models import MarketEvent, TradePayload, bounded_text, decimal_value, strict_int, timestamp_ms
-from .quality import HealthRollup, QualityTracker
+from .quality import HealthRollup, QualityTracker, validate_health_identity
 
 MINUTE_MS = 60_000
 SeriesKey = tuple[str, str, str, str]
@@ -176,6 +176,7 @@ class BoundedMinuteAggregator:
         self._sequences: dict[SeriesKey, tuple[int, int | None]] = {}
         self._coverage: dict[SeriesKey, list[tuple[int, int, int, bool]]] = {}
         self._pending: PendingBatch | None = None
+        self._batch_generation = 0
         self._pending_keys: tuple[tuple[SeriesKey, int], ...] = ()
         self._pending_events = 0
         self._now_ms = 0
@@ -192,7 +193,33 @@ class BoundedMinuteAggregator:
         self.quality.record(event, name, observed_ms=max(event.receive_time_ms, self._processing_ms, self._now_ms),
                             event_latency_ms=max(0, event.receive_time_ms - event.event_time_ms),
                             processing_latency_ms=max(0, self._processing_ms - event.receive_time_ms),
-                            queue_depth=self._pending_events)
+                            queue_depth=self._pending_events, connection_epoch=event.connection_epoch)
+
+    def _observe_non_trade_quality(self, event: MarketEvent, *, future: bool = False) -> None:
+        """Retain typed-data failures without constructing non-trade aggregates."""
+        self._record(event, "non_trade_events")
+        missing_reason = getattr(event.payload, "missing_reason", None)
+        flags = list(event.quality_flags)
+        if missing_reason is not None:
+            self._record(event, "missing_payload_events")
+        if flags:
+            self._record(event, "flagged_quality_events")
+        evidence = {"event_type": event.event_type, "missing_reason": missing_reason,
+                    "quality_flags": flags}
+        if future:
+            evidence["future_event"] = True
+        reason = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        omitted = 0
+        while len(reason) > 2048 and flags:
+            flags.pop()
+            omitted += 1
+            evidence["quality_flags_omitted"] = omitted
+            reason = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if omitted:
+            self._record(event, "health_reason_truncated")
+        self.quality.status(event, "incomplete" if future or missing_reason is not None or event.quality_flags else "complete",
+                            reason, observed_ms=max(event.receive_time_ms, self._processing_ms, self._now_ms),
+                            dimension=event.event_type)
 
     def _admit_series(self, series: SeriesKey) -> bool:
         if series not in self._instruments:
@@ -204,16 +231,20 @@ class BoundedMinuteAggregator:
     def ingest(self, event: MarketEvent, *, processing_time_ms: int | None = None) -> bool:
         if not isinstance(event, MarketEvent):
             raise TypeError("ingest requires a validated MarketEvent")
+        validate_health_identity(event)
         self._processing_ms = max(self._now_ms, event.receive_time_ms) if processing_time_ms is None else timestamp_ms(processing_time_ms, "processing_time_ms")
         if self._processing_ms < event.receive_time_ms:
             raise ValueError("processing time precedes receive time")
-        if event.event_type != "trade" or not isinstance(event.payload, TradePayload):
-            self._record(event, "non_trade_events")
-            return False
-        key = self.series(event)
+        is_trade = event.event_type == "trade" and isinstance(event.payload, TradePayload)
         if event.event_time_ms > event.receive_time_ms + self.max_future_skew_ms:
             self._record(event, "future_events")
+            if not is_trade:
+                self._observe_non_trade_quality(event, future=True)
             return False
+        if not is_trade:
+            self._observe_non_trade_quality(event)
+            return False
+        key = self.series(event)
         if not self._admit_series(key):
             self._record(event, "instrument_limit")
             return False
@@ -296,8 +327,8 @@ class BoundedMinuteAggregator:
         timestamp_ms(start_ms, "coverage start_ms")
         timestamp_ms(end_ms, "coverage end_ms")
         strict_int(connection_epoch, "connection_epoch")
-        for name, value in (("source", source), ("exchange", exchange), ("market", market), ("instrument_id", instrument_id)):
-            bounded_text(value, name)
+        validate_health_identity({"source": source, "exchange": exchange, "market": market,
+                                  "instrument_id": instrument_id})
         if start_ms >= end_ms or not isinstance(complete, bool):
             raise ValueError("coverage must be a nonempty explicit interval")
         key = (source, exchange, market, instrument_id)
@@ -318,6 +349,9 @@ class BoundedMinuteAggregator:
                                 "coverage_overflow", observed_ms=end_ms)
             return False
         self._coverage[key] = merged
+        self.quality.record({"source": source, "exchange": exchange, "market": market, "instrument_id": "*"},
+                            "connection_observations", observed_ms=end_ms - 1,
+                            connection_epoch=connection_epoch)
         return True
 
     def _coverage_ms(self, key: SeriesKey, start: int, epoch: int) -> tuple[int, bool]:
@@ -405,9 +439,18 @@ class BoundedMinuteAggregator:
             self.quality.status(bucket, bucket.quality_status, ",".join(bucket.quality_flags), observed_ms=bucket.end_ms - 1)
         health = self.quality.prepare(cutoff)
         if not buckets and not health:
+            # Even a generation whose routine instrument rows were filtered
+            # must be released. It has no durable output requiring a DB commit.
+            self.quality.acknowledge(health)
             return None
         points = tuple(checkpoints[key] for key in sorted(checkpoints))
-        content = {"buckets": [b.to_dict() for b in buckets], "checkpoints": [dict(p) for p in points],
+        # Distinct health delta generations can have identical values in one
+        # minute. Their IDs must differ so the writer does not mistake a new
+        # observation for a retry. This local counter is deterministic within
+        # fresh replay runs; it is not an incremental crash-resume protocol.
+        self._batch_generation += 1
+        content = {"generation": self._batch_generation,
+                   "buckets": [b.to_dict() for b in buckets], "checkpoints": [dict(p) for p in points],
                    "health_rollups": [r.to_dict() for r in health]}
         batch_id = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self._pending = PendingBatch(batch_id, buckets, points, health)

@@ -93,6 +93,8 @@ Universe 内存只缓存最近 4096 条变更，超出时增加 `history_truncat
 
 价格、数量及名义金额以有限十进制字符串传输，用 `Decimal` 做金额推导，分析结果才转换为受检查的 float。布尔值不能冒充数字；NaN/Infinity、无法安全表示的极值、秒误作毫秒和不匹配 payload 类型应在边界拒绝。缺失指标用 `null` 和缺失原因表达，不能用零补齐。
 
+`missing_reason` 只解释核心字段缺失：MarkPrice 的 `mark_price`、Funding 的 `funding_rate`、OI 的 `open_interest` 为空时必须有原因，有值时原因必须为空。有值但质量较差用事件 `quality_flags`；可选 index price、OI quote notional 等附属值为空不改变这个合同。BookTicker 的 bid/ask 双边存在时原因为空，缺任一边时原因必填，另一边可以保留有效值；可选 bid/ask quantity 为空不表示盘口价格缺失。Liquidation 的 price/quantity/side 缺任一字段必须给原因，三者完整时不得再给缺失原因。上述组合均经过序列化往返和非法组合测试。
+
 绝对时间使用 Unix 毫秒；接收单调时间使用纳秒，仅用于同一次进程生命周期内的耗时。序列号与来源事件 ID 保留各自语义，不跨交易所比较。事件去重键包括来源、交易所、市场、合约、事件类型、来源事件 ID，不因重连 epoch 改变而把重复成交重新计入。
 
 ## 分钟聚合、窗口与质量
@@ -105,9 +107,27 @@ Universe 内存只缓存最近 4096 条变更，超出时增加 `history_truncat
 
 桶内 `late_count` 统计封桶前已接收、但接收时间越过该分钟结束的有效迟到事件；超过水位的拒绝事件只进入接收分钟的健康汇总，不回写历史桶。本地容量不足丢弃事件时，已有桶标为 `local_data_loss/incomplete`，不能仅因剩余序列连续就声称完整。
 
-滚动窗口固定为 `1m / 3m / 5m / 15m / 30m / 1h`。窗口缓存受币种容量及最多 120 分钟保留限制。窗口输出区分预期分钟数、观察分钟数、缺失分钟、连接 epoch 和完整性；缺口、混 epoch、币种单位冲突等情况下分析指标为空，不让部分数据伪装成完整窗口。
+滚动窗口固定为 `1m / 3m / 5m / 15m / 30m / 1h`。窗口缓存受币种容量及最多 120 分钟保留限制。输出字段为：
 
-健康度按分钟落库，包含接受/重复/迟到/序列缺口/无效输入/写失败等计数、事件延迟与处理延迟、队列深度、检查点滞后和压缩后的状态变化。同分钟后续批次的计数按增量合并，延迟与队列/滞后取最大值；同一批重试不会再次累计。`*` 可表示健康指标的源级汇总，它不是合约 ID。
+- `observed_minutes` / `expected_minutes`：实际存在的桶数 / 窗口预期分钟数。
+- `observed_minute_ratio = observed_minutes / expected_minutes`：桶存在比例。
+- `observed_coverage_ms = sum(bucket.coverage_ms)`，`expected_coverage_ms = expected_minutes * 60000`。
+- `time_coverage_ratio = observed_coverage_ms / expected_coverage_ms`：真实时间覆盖率。
+- `complete_minutes` / `incomplete_minutes`：已观察桶中的完整 / 不完整桶数；缺桶单独见 `missing_minutes`。
+
+已删除窗口的歧义字段 `coverage_ratio`。分钟桶自身的 coverage_ratio 仍是 coverage_ms/60000；基线的 coverage_ratio 仍表示有效历史采样覆盖，三个概念不可混用。5 桶各覆盖 10 秒时 observed_minute_ratio=1、time_coverage_ratio=1/6、complete=false，全部分析指标为空。混 epoch 即使时间覆盖为 1 也不能完整。任何 incomplete window 都以 unavailable 进入基线观察，不能成为有效值。
+
+健康度采用 active/prepared 双缓冲：prepare 将本代计数、四个 gauge maxima、epoch 与 status_changes 一并冻结，新观测进入新的 active 行；重试返回同一不可变快照，acknowledge 只接受该代对象。空代也有独立 token，不会让过期确认消费下一代。各缓冲最多 8192 行，总上限两倍；overflow 明确计数。同分钟不同代的相同内容拥有不同 batch ID，同一待提交代重试保持原 ID。
+
+source `*` 分钟汇总保留正常计数及延迟、队列深度、检查点滞后。instrument 行只在异常计数、实际状态变化、明显延迟时持久化；正常 accepted/non_trade/connection/health 观察不单独制造每币每分钟诊断行。第一次 complete 仅初始化状态，后续 incomplete 和恢复 complete 都保留；状态身份缓存有界，耗尽时产生 status_memory_overflow。正常 trade_count 已由市场桶承担。
+
+明显延迟的离线监控默认策略为 event latency >= 2000ms 或 processing latency >= 500ms；可在 QualityTracker 构造时独立调整，尚非生产 SLO。duplicate、late、gap、incomplete、epoch change、local data loss、queue overflow、writer failure、状态变化等证据不能被正常行过滤。queue/checkpoint gauge 本身在 source 汇总保留，超容量错误另有异常计数。
+
+五类非 Trade 输入仍不计算市场聚合，但其核心字段缺失、事件质量标记和未来时间会留下 instrument/source 异常计数。状态原因保留事件类型、missing_reason 与 quality_flags；按事件类型独立比较恢复，避免健康 Funding 覆盖 OI 缺失。原因超过 2048 字符时对超额 flags 显式计入 quality_flags_omitted/health_reason_truncated；缺失原因原文保留。所有类型共享有界状态缓存。
+
+Health 的 source/exchange/market/instrument_id 必须是显式原生 str，长度 1..128，无首尾空白、控制和不可见格式字符；不允许隐式 str()。调用方必须显式填写 instrument_id="*" 才表示源级汇总，缺失身份直接拒绝。每行保留最多 32 个 connection epochs，超过时增加 `connection_epoch_overflow_observations`：表示当前缓冲未保留 epoch 的观测次数，不声称是不同 epoch 数。跨批合并优先保留已有值，对不能保留的输入 epoch 另计 `connection_epoch_merge_overflow_values`（每代遗漏的成员数）；这个数量不是事件数，不能混加到前一指标。
+
+已提交健康分钟的 counters 按代增量相加，gauges 取各代最大值，status_changes 去重合并。其累计最大值可以仍是 900，但下一待提交代只能包含新观测的 20；二者语义不同。桶、健康、检查点和批次凭据一起提交，同一代重试不会再次累计。
 
 ## 动态基线的含义
 
@@ -142,6 +162,8 @@ P1A Schema v1 仅包含下列七张表；市场小数等完整字段也保留在
 
 迁移只能通过显式 `migrate` 调用执行。SQL 校验和或历史版本不一致、未知更高版本、已有非 Hunter Schema 均拒绝，不自动修复或降级。读路径不创建 Schema，Writer.open 也不自动迁移。
 
+本次 hardening 保持七表、索引及 Schema v1 SQL/checksum 不变；减少的是冗余健康行的生成，新增 epoch 证据仍放在健康 JSON 内，不创建 v2。旧 P1A 临时库可离线读取，但其健康/覆盖结果不满足本次新语义，不能作为本轮验收或继续写入回放的输入。请在新临时空库重放；不自动删除旧临时库，也不触碰旧策略数据库。
+
 Writer 必须显式打开、限定所属线程、持有现有 DB 文件上的非阻塞排他锁，使用 WAL、有限 busy timeout 和短事务。数据库构造器不建父目录。锁竞争、写入失败不推进已提交检查点。
 
 数据交接顺序为：
@@ -162,6 +184,8 @@ Writer 必须显式打开、限定所属线程、持有现有 DB 文件上的非
 ```
 
 失败时未确认批次保留，事务回滚后可用同一 batch ID 重试。发生“数据库已提交但调用者未获成功结果”时，持久化 batch 凭据避免重复计数。相同 batch ID 配不同内容会被拒绝；检查点必须与本批各来源的最新桶结束时间/epoch 对应。已有测试分别在实际 commit 前、commit 后注入异常，并检查原子性及重试结果，最终测试数量由 PR 验收记录提供。
+
+batch ID 由内容和确定性的进程内批代序号共同计算，避免同分钟两份完全相同的合法健康增量被误认作重试。该序号只在生成新批次时递增，失败重试不变；它不构成跨进程增量恢复协议。不同进程从相同 fixture 和空库开始仍确定性一致。
 
 **默认回放流程的基线是已提交桶的派生状态，不与当前桶提交构成一个原子事务。** 存储层可以接受显式附带的 baseline states，但不能据此声称整个回放流程已经具备生产级崩溃恢复。P1A 恢复路径是在新临时空库从原 fixture 重建全部派生状态，不提供在半完成库上增量续跑的承诺。
 
@@ -186,6 +210,8 @@ python -B -m tests.altcoin_hunter_tests.capacity --instruments 600 --minutes 20 
 ```
 
 容量实测、环境、峰值内存、写入吞吐及最终测试数由 PR 验收记录提供。短时合成数据结果不代表真实全市场吞吐、交易所可用性或六小时稳定性。
+
+容量工具还提供关闭后数据库的只读页归属审计：逐表行数、数据页、索引页、record_json UTF-8 平均字节和健康证据分层。Windows SQLite 缺少 dbstat 时按 [SQLite 官方文件格式](https://www.sqlite.org/fileformat2.html#b_tree_pages)解析 B-tree/overflow 页；可用时与 dbstat 交叉验证，所有已分配页、freelist 和保留页必须与主文件大小守恒。该审计在计时及内存采样结束后运行，不是生产数据库读取入口。
 
 尚未实施：真实 REST/WS adapter、全市场实时币池调度、交易所订阅与重连编排、持续网络限流、生产健康守护、原始成交长期存储、自动保留清理、实时 Web API/页面、Telegram Topic 接入、五类策略信号、三评分、八态策略状态机、Outcome Tracker、自动部署与生产容量承诺。六类事件的合同存在，不等于六类真实采集器已经完成。
 

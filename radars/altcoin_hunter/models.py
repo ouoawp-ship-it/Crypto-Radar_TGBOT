@@ -55,13 +55,23 @@ def _multiply_exact(*values: Decimal) -> Decimal:
         return result
 
 
-def _optional_metric(value: str | None, name: str, reason: str | None, *, positive: bool = False, nonnegative: bool = False) -> None:
+def _missing_core_metrics(core: Mapping[str, Any], reason: str | None) -> None:
+    """Describe missing core data once per payload, never source quality.
+
+    Optional supporting metadata does not participate in this contract. An
+    available core value with degraded quality belongs in event.quality_flags.
+    """
     if reason is not None:
         bounded_text(reason, "missing_reason", limit=256)
-    if value is None:
-        if reason is None:
-            raise ValueError(f"{name}=null requires missing_reason")
-    else:
+    missing = tuple(name for name, value in core.items() if value is None)
+    if missing and reason is None:
+        raise ValueError(f"{','.join(missing)}=null requires missing_reason")
+    if not missing and reason is not None:
+        raise ValueError("complete core metrics require missing_reason=null; use event quality_flags for degraded quality")
+
+
+def _optional_metric(value: str | None, name: str, *, positive: bool = False, nonnegative: bool = False) -> None:
+    if value is not None:
         decimal_value(value, name, positive=positive, nonnegative=nonnegative)
 
 
@@ -103,7 +113,8 @@ class MarkPricePayload:
     missing_reason: str | None = None
 
     def __post_init__(self) -> None:
-        _optional_metric(self.mark_price, "mark_price", self.missing_reason, positive=True)
+        _missing_core_metrics({"mark_price": self.mark_price}, self.missing_reason)
+        _optional_metric(self.mark_price, "mark_price", positive=True)
         if self.index_price is not None:
             decimal_value(self.index_price, "index_price", positive=True)
 
@@ -116,7 +127,8 @@ class FundingPayload:
     missing_reason: str | None = None
 
     def __post_init__(self) -> None:
-        _optional_metric(self.funding_rate, "funding_rate", self.missing_reason)
+        _missing_core_metrics({"funding_rate": self.funding_rate}, self.missing_reason)
+        _optional_metric(self.funding_rate, "funding_rate")
         if self.interval_hours is not None:
             strict_int(self.interval_hours, "interval_hours", minimum=1, maximum=168)
         if self.next_funding_time_ms is not None:
@@ -132,7 +144,8 @@ class OpenInterestPayload:
     missing_reason: str | None = None
 
     def __post_init__(self) -> None:
-        _optional_metric(self.open_interest, "open_interest", self.missing_reason, nonnegative=True)
+        _missing_core_metrics({"open_interest": self.open_interest}, self.missing_reason)
+        _optional_metric(self.open_interest, "open_interest", nonnegative=True)
         if self.unit not in {"base", "contracts", "quote"}:
             raise ValueError("OI unit must be base, contracts or quote")
         if self.quote_notional is not None:
@@ -142,6 +155,11 @@ class OpenInterestPayload:
 
 @dataclass(frozen=True)
 class BookTickerPayload:
+    """One-sided quotes are partial data and require a payload missing reason.
+
+    Both prices present means no missing_reason; optional quantities may remain
+    null. Source-quality concerns are carried by MarketEvent.quality_flags.
+    """
     bid_price: str | None
     ask_price: str | None
     bid_quantity: str | None = None
@@ -149,8 +167,9 @@ class BookTickerPayload:
     missing_reason: str | None = None
 
     def __post_init__(self) -> None:
-        _optional_metric(self.bid_price, "bid_price", self.missing_reason, positive=True)
-        _optional_metric(self.ask_price, "ask_price", self.missing_reason, positive=True)
+        _missing_core_metrics({"bid_price": self.bid_price, "ask_price": self.ask_price}, self.missing_reason)
+        _optional_metric(self.bid_price, "bid_price", positive=True)
+        _optional_metric(self.ask_price, "ask_price", positive=True)
         if self.bid_price is not None and self.ask_price is not None and Decimal(self.bid_price) > Decimal(self.ask_price):
             raise ValueError("bid_price exceeds ask_price")
         for name in ("bid_quantity", "ask_quantity"):
@@ -168,10 +187,11 @@ class LiquidationPayload:
     missing_reason: str | None = None
 
     def __post_init__(self) -> None:
-        _optional_metric(self.price, "price", self.missing_reason, positive=True)
-        _optional_metric(self.quantity, "quantity", self.missing_reason, nonnegative=True)
-        if self.side not in {"buy", "sell", None} or (self.side is None and self.missing_reason is None):
-            raise ValueError("liquidation side requires buy/sell or missing reason")
+        _missing_core_metrics({"price": self.price, "quantity": self.quantity, "side": self.side}, self.missing_reason)
+        _optional_metric(self.price, "price", positive=True)
+        _optional_metric(self.quantity, "quantity", nonnegative=True)
+        if self.side not in {"buy", "sell", None}:
+            raise ValueError("liquidation side requires buy/sell or null")
         if self.quantity_unit not in {"base", "contracts"}:
             raise ValueError("quantity_unit must be base or contracts")
         decimal_value(self.contract_multiplier, "contract_multiplier", positive=True)

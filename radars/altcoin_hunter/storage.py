@@ -347,7 +347,10 @@ class HunterWriter:
         if isinstance(checkpoint_input, Mapping):
             checkpoint_input = checkpoint_input.values()
         checkpoints = tuple(_record(item) for item in checkpoint_input)
-        health = tuple(_record(item) for item in getattr(pending, "health_rollups", getattr(pending, "health", ())))
+        # Validate native identity types before JSON detachment can coerce
+        # subclasses or mapping keys to ordinary strings.
+        health = tuple(_record(self._health_record(item.to_dict() if hasattr(item, "to_dict") else item))
+                       for item in getattr(pending, "health_rollups", getattr(pending, "health", ())))
         baselines = tuple(_record(item) for item in baseline_states)
         latest_buckets: dict[tuple[str, ...], Mapping[str, Any]] = {}
         seen_buckets: set[tuple[Any, ...]] = set()
@@ -413,9 +416,21 @@ class HunterWriter:
                     counters = dict(previous_health["counters"])
                     for key, value in record["counters"].items():
                         counters[key] = counters.get(key, 0) + value
+                    epochs = set(previous_health.get("connection_epochs", []))
+                    for epoch in record["connection_epochs"]:
+                        if epoch not in epochs:
+                            if len(epochs) < 32:
+                                epochs.add(epoch)
+                            else:
+                                # A rollup only retains epoch membership, not
+                                # per-epoch event multiplicity. Keep this unit
+                                # separate from the tracker's lost observations.
+                                name = "connection_epoch_merge_overflow_values"
+                                counters[name] = counters.get(name, 0) + 1
                     changes = {_json(item): item for item in (*previous_health["status_changes"], *record["status_changes"])}
                     record = {
                         **record, "counters": counters,
+                        "connection_epochs": sorted(epochs),
                         "max_processing_latency_ms": max(previous_health["max_processing_latency_ms"], record["max_processing_latency_ms"]),
                         "max_event_latency_ms": max(previous_health.get("max_event_latency_ms", 0), record["max_event_latency_ms"]),
                         "max_queue_depth": max(previous_health.get("max_queue_depth", 0), record["max_queue_depth"]),
@@ -430,20 +445,39 @@ class HunterWriter:
 
     @staticmethod
     def _health_record(value: Mapping[str, Any]) -> dict[str, Any]:
+        from .models import bounded_text
+        from .quality import validate_health_identity
+
+        if not isinstance(value, Mapping):
+            raise StorageError("invalid_health_record")
         record = dict(value)
-        for key in _IDENTITY:
-            field = record.get(key, "")
-            if not isinstance(field, str):
-                raise StorageError("invalid_health_identity")
-            record[key] = field or "*"
+        try:
+            validate_health_identity(record)
+        except ValueError as exc:
+            raise StorageError("invalid_health_identity") from exc
         counters = record.get("counters", {})
         if not isinstance(counters, Mapping):
             raise StorageError("invalid_health_counters")
-        record["counters"] = {str(key): _integer(value, "health_counter") for key, value in counters.items()}
+        for key in counters:
+            if type(key) is not str:
+                raise StorageError("invalid_health_counter_name")
+            try:
+                bounded_text(key, "health_counter_name", limit=64)
+            except ValueError as exc:
+                raise StorageError("invalid_health_counter_name") from exc
+        record["counters"] = {key: _integer(value, "health_counter") for key, value in counters.items()}
         record["max_processing_latency_ms"] = _integer(record.get("max_processing_latency_ms", 0), "processing_latency_ms")
         record["max_event_latency_ms"] = _integer(record.get("max_event_latency_ms", 0), "event_latency_ms")
         record["max_queue_depth"] = _integer(record.get("max_queue_depth", 0), "queue_depth")
         record["max_checkpoint_lag_ms"] = _integer(record.get("max_checkpoint_lag_ms", 0), "checkpoint_lag_ms")
+        epochs = record.get("connection_epochs", [])
+        if not isinstance(epochs, list) or len(epochs) > 32:
+            raise StorageError("invalid_health_connection_epochs")
+        for epoch in epochs:
+            _integer(epoch, "connection_epoch")
+        if len(set(epochs)) != len(epochs):
+            raise StorageError("duplicate_health_connection_epoch")
+        record["connection_epochs"] = sorted(epochs)
         changes = record.get("status_changes", [])
         if not isinstance(changes, list):
             raise StorageError("invalid_health_status_changes")

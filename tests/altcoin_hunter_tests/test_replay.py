@@ -224,6 +224,33 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(result["counts"]["incomplete_buckets"], 1)
             self.assertIsNone(result["latest_baseline"]["result"]["raw_value"])
 
+    def test_partial_time_coverage_never_enters_valid_baseline_history(self):
+        records = list(iter_synthetic_records(1, 8, 42))
+        for record in records:
+            if record["kind"] == "coverage":
+                interval = record["coverage"]
+                interval["end_ms"] = interval["start_ms"] + 10_000
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "hunter.db"
+            migrate(path)
+            result = run_replay(path, records, baseline_windows=(1, 5))
+            self.assertEqual(result["counts"]["committed_buckets"], 8)
+            self.assertEqual(result["counts"]["incomplete_buckets"], 8)
+            self.assertEqual(result["counts"]["ready_baselines"], 0)
+            window = result["latest_window"]
+            self.assertEqual(window["observed_minute_ratio"], 1)
+            self.assertAlmostEqual(window["time_coverage_ratio"], 1 / 6)
+            self.assertFalse(window["complete"])
+            self.assertIsNone(result["latest_baseline"]["result"]["raw_value"])
+            self.assertEqual(result["latest_baseline"]["result"]["sample_count"], 0)
+            states = HunterReadModel(path).load_baselines()
+            self.assertEqual(len(states), 6)
+            for state in states:
+                with self.subTest(feature=state["feature"], window_sec=state["window_sec"]):
+                    samples = state["payload"]["samples"]
+                    self.assertTrue(samples)
+                    self.assertTrue(all(raw is None for _timestamp, raw in samples))
+
     def test_coverage_cannot_claim_future_and_zero_grace_supports_multiple_symbols(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "zero.db"

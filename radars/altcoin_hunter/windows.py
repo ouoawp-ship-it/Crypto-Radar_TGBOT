@@ -83,13 +83,24 @@ class RollingWindowEngine:
             reasons.update(bucket.quality_flags)
             if not bucket.complete:
                 reasons.add("incomplete_minute")
-        # Keep partial coverage visible while withholding analytical values. This
-        # prevents consumers from accidentally scoring an incomplete window.
+        # Bucket presence and observed time answer different questions. A bucket
+        # containing ten seconds of verified continuity counts as one observed
+        # minute, but contributes only ten seconds to time coverage. Full time
+        # coverage also does not override sequence/epoch or other quality gates.
+        observed_coverage_ms = sum(bucket.coverage_ms for bucket in buckets)
+        expected_coverage_ms = window_minutes * MINUTE_MS
+        complete_minutes = sum(bucket.complete for bucket in buckets)
         result: dict[str, Any] = {
             "source": source, "exchange": exchange, "market": market,
             "instrument_id": instrument_id, "start_ms": start, "end_ms": end_ms,
             "window_minutes": window_minutes, "expected_minutes": window_minutes,
-            "observed_minutes": len(buckets), "coverage_ratio": len(buckets) / window_minutes,
+            "observed_minutes": len(buckets),
+            "observed_minute_ratio": len(buckets) / window_minutes,
+            "observed_coverage_ms": observed_coverage_ms,
+            "expected_coverage_ms": expected_coverage_ms,
+            "time_coverage_ratio": observed_coverage_ms / expected_coverage_ms,
+            "complete_minutes": complete_minutes,
+            "incomplete_minutes": len(buckets) - complete_minutes,
             "missing_minutes": missing, "quality_flags": tuple(sorted(reasons)),
             "quality_status": "incomplete" if reasons else "complete",
             "complete": not reasons, "connection_epochs": tuple(sorted(epochs)),

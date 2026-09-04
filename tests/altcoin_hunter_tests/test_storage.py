@@ -14,6 +14,7 @@ import unittest
 from radars.altcoin_hunter.aggregation import MinuteBucket, PendingBatch
 from radars.altcoin_hunter.baselines import BaselineKey, BaselinePolicy, RollingBaseline
 from radars.altcoin_hunter.read_model import HunterReadModel, ReadOnlyUnavailable
+from radars.altcoin_hunter.quality import QualityTracker
 from radars.altcoin_hunter.storage import HunterWriter, MigrationError, StorageError, TABLES, migrate
 from radars.altcoin_hunter.universe import Instrument
 
@@ -237,9 +238,11 @@ class HunterStorageTests(unittest.TestCase):
             migrate(path)
             change = {"at_ms": START + 1, "status": "incomplete", "reason": "gap"}
             first = {**IDENTITY, "minute_ms": START, "counters": {"late": 2}, "max_processing_latency_ms": 10,
-                     "max_event_latency_ms": 200, "max_queue_depth": 7, "max_checkpoint_lag_ms": 500, "status_changes": [change]}
+                     "max_event_latency_ms": 200, "max_queue_depth": 7, "max_checkpoint_lag_ms": 500,
+                     "connection_epochs": [1], "status_changes": [change]}
             second = {**first, "counters": {"late": 3, "invalid": 1}, "max_processing_latency_ms": 20,
-                      "max_event_latency_ms": 100, "max_queue_depth": 10, "max_checkpoint_lag_ms": 100}
+                      "max_event_latency_ms": 100, "max_queue_depth": 10, "max_checkpoint_lag_ms": 100,
+                      "connection_epochs": [2]}
             with HunterWriter(path) as writer:
                 writer.commit_batch(PendingBatch("health-one", (), (), (first,)))
                 batch = PendingBatch("health-two", (), (), (second,))
@@ -253,6 +256,125 @@ class HunterStorageTests(unittest.TestCase):
             self.assertEqual(value["max_queue_depth"], 10)
             self.assertEqual(value["max_checkpoint_lag_ms"], 500)
             self.assertEqual(value["status_changes"], [change])
+            self.assertEqual(value["connection_epochs"], [1, 2])
+
+    def test_health_native_identity_and_epoch_contracts_reject_without_commit(self):
+        class StringSubclass(str):
+            pass
+
+        invalid_values = (None, True, 0, 1.0, "", " ", " leading", "trailing ", "bad\x00id",
+                          "bad\x7fid", "x" * 129, StringSubclass("looks-valid"))
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hunter.db"
+            migrate(path)
+            valid = {**IDENTITY, "minute_ms": START, "counters": {"duplicates": 1}}
+            with HunterWriter(path) as writer:
+                for field in IDENTITY:
+                    for value in invalid_values:
+                        with self.subTest(field=field, value=repr(value)), self.assertRaises(StorageError):
+                            writer.commit_batch(PendingBatch("invalid-health", (), (), ({**valid, field: value},)))
+                    absent = dict(valid)
+                    del absent[field]
+                    with self.subTest(field=field, missing=True), self.assertRaises(StorageError):
+                        writer.commit_batch(PendingBatch("missing-health", (), (), (absent,)))
+                for epochs in ([True], [-1], [1.5], ["1"], [1, 1], list(range(33)), None):
+                    with self.subTest(epochs=epochs), self.assertRaises(StorageError):
+                        writer.commit_batch(PendingBatch("invalid-epochs", (), (), ({**valid, "connection_epochs": epochs},)))
+                self.assertEqual(writer.read_counts()["health_rollups_1m"], 0)
+                self.assertEqual(writer.read_counts()["ingest_checkpoints"], 0)
+                writer.commit_batch(PendingBatch("explicit-source", (), (), ({**valid, "instrument_id": "*"},)))
+                self.assertEqual(writer.read_counts()["health_rollups_1m"], 1)
+
+    def test_health_frozen_retry_then_post_prepare_delta_is_committed_once(self):
+        quality = QualityTracker()
+        quality.record(IDENTITY, "accepted", observed_ms=START + 1, processing_latency_ms=900,
+                       event_latency_ms=800, queue_depth=100, checkpoint_lag_ms=5000)
+        quality.status(IDENTITY, "incomplete", "gap", observed_ms=START + 1)
+        frozen = quality.prepare(START + 60000)
+        serialized = [row.to_dict() for row in frozen]
+        quality.record(IDENTITY, "accepted", observed_ms=START + 2, processing_latency_ms=20,
+                       event_latency_ms=30, queue_depth=2, checkpoint_lag_ms=100)
+        quality.status(IDENTITY, "complete", "", observed_ms=START + 2)
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hunter.db"
+            migrate(path)
+            with FailingCommitWriter(path) as writer:
+                first = PendingBatch("generation-one", (), (), frozen)
+                writer.fail_next = True
+                with self.assertRaises(sqlite3.OperationalError):
+                    writer.commit_batch(first)
+                self.assertIs(quality.prepare(START + 60000), frozen)
+                self.assertEqual([row.to_dict() for row in frozen], serialized)
+                self.assertEqual(writer.read_counts()["ingest_checkpoints"], 0)
+                self.assertEqual(writer.read_counts()["health_rollups_1m"], 0)
+                writer.commit_batch(first)
+                self.assertTrue(writer.commit_batch(first).receipt.already_committed)
+                quality.acknowledge(frozen)
+                newer = quality.prepare(START + 60000)
+                for row in newer:
+                    self.assertEqual(dict(row.counters)["accepted"], 1)
+                    self.assertEqual((row.max_processing_latency_ms, row.max_event_latency_ms,
+                                      row.max_queue_depth, row.max_checkpoint_lag_ms), (20, 30, 2, 100))
+                second = PendingBatch("generation-two", (), (), newer)
+                writer.commit_batch(second)
+                writer.commit_batch(second)
+                quality.acknowledge(newer)
+            with closing(sqlite3.connect(path)) as connection:
+                rows = [json.loads(row[0]) for row in connection.execute("SELECT record_json FROM health_rollups_1m")]
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                self.assertEqual(row["counters"]["accepted"], 2)
+                # The durable minute total keeps its correct all-generation
+                # maxima; only the new pending delta must exclude old gauges.
+                self.assertEqual((row["max_processing_latency_ms"], row["max_event_latency_ms"],
+                                  row["max_queue_depth"], row["max_checkpoint_lag_ms"]), (900, 800, 100, 5000))
+            instrument = next(row for row in rows if row["instrument_id"] != "*")
+            self.assertEqual([change["status"] for change in instrument["status_changes"]], ["incomplete", "complete"])
+
+    def test_health_epoch_capacity_merge_keeps_overflow_evidence_and_retry_is_idempotent(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hunter.db"
+            migrate(path)
+            first = {**IDENTITY, "minute_ms": START, "counters": {"epoch_changed": 31},
+                     "connection_epochs": list(range(32))}
+            second = {**IDENTITY, "minute_ms": START, "counters": {"epoch_changed": 2},
+                      "connection_epochs": [32, 33]}
+            with HunterWriter(path) as writer:
+                writer.commit_batch(PendingBatch("epochs-one", (), (), (first,)))
+                batch = PendingBatch("epochs-two", (), (), (second,))
+                writer.commit_batch(batch)
+                writer.commit_batch(batch)
+            with closing(sqlite3.connect(path)) as connection:
+                row = json.loads(connection.execute("SELECT record_json FROM health_rollups_1m").fetchone()[0])
+            self.assertEqual(row["connection_epochs"], list(range(32)))
+            self.assertEqual(row["counters"]["epoch_changed"], 33)
+            self.assertEqual(row["counters"]["connection_epoch_merge_overflow_values"], 2)
+            self.assertNotIn("connection_epoch_overflow_observations", row["counters"])
+
+    def test_epoch_merge_overflow_is_not_mislabeled_as_event_observation_count(self):
+        quality = QualityTracker()
+        for epoch in range(32):
+            quality.record(IDENTITY, "accepted", observed_ms=START + 1, connection_epoch=epoch)
+        first = quality.prepare(START + 60000)
+        quality.acknowledge(first)
+        for _ in range(10):
+            quality.record(IDENTITY, "accepted", observed_ms=START + 2, connection_epoch=32)
+        second = quality.prepare(START + 60000)
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hunter.db"
+            migrate(path)
+            with HunterWriter(path) as writer:
+                writer.commit_batch(PendingBatch("epoch-seen-first", (), (), first))
+                batch = PendingBatch("epoch-seen-second", (), (), second)
+                writer.commit_batch(batch)
+                writer.commit_batch(batch)
+            with closing(sqlite3.connect(path)) as connection:
+                rows = [json.loads(row[0]) for row in connection.execute("SELECT record_json FROM health_rollups_1m")]
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                self.assertEqual(row["counters"]["accepted"], 42)
+                self.assertEqual(row["counters"]["connection_epoch_merge_overflow_values"], 1)
+                self.assertNotIn("connection_epoch_overflow_observations", row["counters"])
 
     def test_checkpoint_cannot_advance_without_its_bucket(self):
         with TemporaryDirectory() as tmp:

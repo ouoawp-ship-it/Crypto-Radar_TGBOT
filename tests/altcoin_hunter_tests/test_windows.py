@@ -8,6 +8,13 @@ from radars.altcoin_hunter.windows import RollingWindowEngine, WINDOW_MINUTES
 from tests.altcoin_hunter_tests.test_aggregation import START, cover, trade
 
 
+ANALYTICAL_FIELDS = (
+    "price_open", "price_high", "price_low", "price_close", "price_return_ratio",
+    "buy_quote", "sell_quote", "quote_volume", "delta_quote", "taker_buy_ratio",
+    "delta_ratio", "trade_count",
+)
+
+
 class WindowTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -22,14 +29,25 @@ class WindowTests(unittest.TestCase):
                             instrument_id="AAAUSDT", end_ms=START + end_minutes * 60_000,
                             window_minutes=minutes)
 
-    def load(self, engine, minutes, *, skip=(), split_epoch=None):
+    def load(self, engine, minutes, *, skip=(), split_epoch=None, coverage_ms=None):
         aggregator = BoundedMinuteAggregator()
+        sequence = 0
         for minute in range(minutes):
             if minute in skip:
                 continue
             epoch = 1 if split_epoch is not None and minute >= split_epoch else 0
-            cover(aggregator, start=START + minute * 60_000, epoch=epoch)
-            aggregator.ingest(trade(minute + 1, minute=minute, epoch=epoch, price=str(10 + minute)))
+            if coverage_ms is None:
+                cover(aggregator, start=START + minute * 60_000, epoch=epoch)
+            else:
+                start = START + minute * 60_000
+                aggregator.note_connection(source="binance_agg_trade", exchange="binance", market="futures",
+                    instrument_id="AAAUSDT", connection_epoch=epoch,
+                    start_ms=start, end_ms=start + coverage_ms[minute])
+            # A missing minute is separate from a missing source sequence. Keep
+            # sequence contiguous across admitted events so skip isolates time.
+            sequence += 1
+            aggregator.ingest(trade(minute + 1, minute=minute, epoch=epoch,
+                sequence=sequence, price=str(10 + minute)))
             pending = aggregator.prepare(START + (minute + 1) * 60_000 + 2000)
             committed = self.writer.commit_batch(pending)
             engine.ingest_committed(committed)
@@ -45,6 +63,51 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual(result["observed_minutes"], minutes)
                 self.assertEqual(result["price_close"], "69")
 
+    def test_five_complete_minutes_report_full_observed_and_time_coverage(self):
+        engine = self.load(RollingWindowEngine(), 5)
+        result = self.query(engine, 5, 5)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["observed_minutes"], 5)
+        self.assertEqual(result["expected_minutes"], 5)
+        self.assertEqual(result["observed_minute_ratio"], 1)
+        self.assertEqual(result["observed_coverage_ms"], 300_000)
+        self.assertEqual(result["expected_coverage_ms"], 300_000)
+        self.assertEqual(result["time_coverage_ratio"], 1)
+        self.assertEqual(result["complete_minutes"], 5)
+        self.assertEqual(result["incomplete_minutes"], 0)
+        self.assertNotIn("coverage_ratio", result)
+
+    def test_five_ten_second_buckets_do_not_report_full_time_coverage(self):
+        engine = self.load(RollingWindowEngine(), 5, coverage_ms=(10_000,) * 5)
+        result = self.query(engine, 5, 5)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["observed_minutes"], 5)
+        self.assertEqual(result["expected_minutes"], 5)
+        self.assertEqual(result["observed_minute_ratio"], 1)
+        self.assertEqual(result["observed_coverage_ms"], 50_000)
+        self.assertEqual(result["expected_coverage_ms"], 300_000)
+        self.assertAlmostEqual(result["time_coverage_ratio"], 1 / 6)
+        self.assertEqual(result["complete_minutes"], 0)
+        self.assertEqual(result["incomplete_minutes"], 5)
+        for field in ANALYTICAL_FIELDS:
+            with self.subTest(field=field):
+                self.assertIsNone(result[field])
+        self.assertNotIn("coverage_ratio", result)
+
+    def test_complete_and_partial_minutes_have_distinct_counts_and_time_ratio(self):
+        engine = self.load(RollingWindowEngine(), 5, coverage_ms=(60_000, 10_000, 60_000, 20_000, 60_000))
+        result = self.query(engine, 5, 5)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["observed_minute_ratio"], 1)
+        self.assertEqual(result["observed_coverage_ms"], 210_000)
+        self.assertEqual(result["expected_coverage_ms"], 300_000)
+        self.assertEqual(result["time_coverage_ratio"], 0.7)
+        self.assertEqual(result["complete_minutes"], 3)
+        self.assertEqual(result["incomplete_minutes"], 2)
+        for field in ANALYTICAL_FIELDS:
+            with self.subTest(field=field):
+                self.assertIsNone(result[field])
+
     def test_uncommitted_batch_cannot_enter_window(self):
         engine = RollingWindowEngine()
         aggregator = BoundedMinuteAggregator()
@@ -57,6 +120,14 @@ class WindowTests(unittest.TestCase):
         result = self.query(engine, 5, 5)
         self.assertFalse(result["complete"])
         self.assertEqual(result["missing_minutes"], (START + 120_000,))
+        self.assertEqual(result["observed_minutes"], 4)
+        self.assertEqual(result["expected_minutes"], 5)
+        self.assertEqual(result["observed_minute_ratio"], 0.8)
+        self.assertEqual(result["observed_coverage_ms"], 240_000)
+        self.assertEqual(result["expected_coverage_ms"], 300_000)
+        self.assertEqual(result["time_coverage_ratio"], 0.8)
+        self.assertEqual(result["complete_minutes"], 4)
+        self.assertEqual(result["incomplete_minutes"], 0)
         self.assertIsNone(result["quote_volume"])
         self.assertIsNone(result["delta_quote"])
 
@@ -65,6 +136,13 @@ class WindowTests(unittest.TestCase):
         result = self.query(engine, 5, 5)
         self.assertFalse(result["complete"])
         self.assertIn("connection_epoch_changed", result["quality_flags"])
+        self.assertEqual(result["observed_minute_ratio"], 1)
+        self.assertEqual(result["time_coverage_ratio"], 1)
+        self.assertEqual(result["complete_minutes"], 4)
+        self.assertEqual(result["incomplete_minutes"], 1)
+        for field in ANALYTICAL_FIELDS:
+            with self.subTest(field=field):
+                self.assertIsNone(result[field])
 
     def test_future_buckets_do_not_leak_into_earlier_window(self):
         engine = self.load(RollingWindowEngine(), 5)
