@@ -1,4 +1,6 @@
-# P1A Final Correctness & Storage Hardening 验收记录
+# Altcoin Hunter 验收记录
+
+前半部分保留 PR #172 的 P1A hardening 历史记录。本轮 P1B-I 的范围、测试和容量见文末独立记录，不将历史结果当作新代码验收。
 
 日期：2026-09-04。仓库：`C:\Users\多多\Desktop\Crypto-Radar_TGBOT`。分支：`codex/altcoin-hunter-p1a-foundation`。本轮起始 HEAD：`11616ef042908a97de23fbca6c8fd1172e4e4bc9`；main 精确基线仍为 `5fbec29ec2c854504e8f1cf561855fba8acb349c`。继续原 [Draft PR #172](https://github.com/ouoawp-ship-it/Crypto-Radar_TGBOT/pull/172)，不转 Ready、不合并、不部署。
 
@@ -98,3 +100,87 @@ Schema v1 七表和索引 SQL/checksum 未变化，无 v2。问题可以通过�
 P1B另立任务审查只读公开数据adapter的消息映射、有限timeout/retry、订阅预算、限流、断线epoch及缺失质量；真实联网必须另行明确范围与门禁。P1C才讨论受控长期soak。本文不启动P1B。
 
 回滚本次离线使用只需停止离线命令；临时数据保留供核查。若要回退代码，在重新安全检查后用单独提交反向回退本次hardening commit，不重写已发布历史、不回退或迁移旧策略数据库、不删除活跃WAL。
+
+## P1B-I：Binance USDⓈ-M 离线协议与调度底座
+
+2026-09-04 UTC，从精确合并基线 `e7622becdec46c179d97820f0769790b9a49e3af` 创建 `codex/altcoin-hunter-p1b-public-data-adapters`。创建前本地仍在 P1A 分支 `6b42fab76b411a39bb224d01fc0fb55f45d7db45`；已验证远端 main、PR #172 MERGED 及 merge parents `5fbec29ec2c854504e8f1cf561855fba8acb349c`、`6b42fab76b411a39bb224d01fc0fb55f45d7db45`。目标分支原先不存在，工作区/暂存区/未跟踪为空，无 Git 操作或使用该工作树的 Bot/Python 进程；其他 worktree 未操作。
+
+只增加 adapters、subscription_plan、connection、rest_budget、rest_scheduler、ingestion，以及本域新测试/40 个静态虚构 Fixture；既有修改仅 runtime/altcoin_hunter.py 的三个离线子命令和 README/本文。configuration/models/identity/universe/aggregation/windows/baselines/quality/storage/read_model 及 migration 均与基线 Git blob 相同。Schema v1 七表不变，旧策略、shared、主调度、依赖、部署和生产配置无 diff。
+
+80 个原有 ignored 配置、DB、锁和运行时文件在实施前后按 SHA-256 比较；无变化。所有新 CLI 无 DB 参数或 storage 实例，新导入和 CLI 子进程测试禁止网络客户端、socket/DNS、SQLite、线程启动与文件写入。Windows 路径读取额外拒绝 UNC、映射网络盘、reparse 组件。全部验证在不含生产 .env/ignored 运行时文件的临时副本运行，原仓库受独立审计钩子写入保护。
+
+### 关键合同证据
+
+- `test_binance_exchange_info.py`：目录整批有效才发布、失败保留 last-good、同名不合并、filters/precision/时间、explicit identity 与元数据版本。
+- `test_binance_protocol.py`：Raw/Combined、UM/CM、坏元素隔离、全部六类 typed event、q/nq、nullable Funding interval、BBO 去重、清算 snapshot、精确 OI 倍率与 ID、wrapper 大小/深度共享限制。
+- `test_binance_subscriptions.py`、`test_binance_connection.py`：600/1000/1500 规划、路由/容量、增删稳定分配、严格 ACK、有限重连、回收、8 controls/s、旧 epoch、实际调用 P1A note_connection 验证覆盖。覆盖缓存 301 条保留 256、淘汰 45，诊断计数完整，不从摘要伪造证据。
+- `test_binance_rest.py`：端点权重、防伪造预算、funding 独立次数、Retry-After/418/429/超时/5xx、取消/stale/请求 ID 碰撞、队列有界、3:1 公平、80 高频上限、预算故障 fail closed 及显式恢复。
+- `test_binance_ingestion.py`：ACK/route/epoch/liveness/未来时间拒绝、有界去重、全市场观察分母、promoted 优先级升级、筛选后的 metadata 对齐、诊断脱敏和有界快照。
+- `test_binance_cli.py`、`test_binance_isolation.py`：实际主入口、确定性输出、元数据不伪造成事件、默认无在线子命令、零运行时副作用。另在临时副本实际执行三条 `python -B -m runtime.altcoin_hunter ...` 命令，均退出 0。
+
+OI 保留 `1200.500 contracts` 原值并在 adapter metadata 中精确换算 `×1000=1200500.000 base`；base 直接保留，quote 缺价格返回 null/reason，极值溢出/下溢拒绝。source_event_id 包含 symbol、毫秒时间和 SHA-256。不把 OI 增加或主动成交差解释为资金方向。
+
+未修改、删除或弱化任何既有测试，未新增永久 skip。本轮没有真实 DNS/HTTP/WS 行情连接、Telegram、Web/链上、生产数据库访问、Migration、服务、部署、合并或 P1B-II。官方文档和 GitHub 的审计操作与运行时离线网络计数分开记录。
+
+### P1B-I 最终本地回归
+
+环境：Windows、Python 3.14.7。最终源码在独立 `release-full` / `release-special` 临时副本验证；此前对已被修正代码的运行已作废，不计入本表。
+
+| 检查 | collected / runner count | 实际执行 / passed | failed | skipped | elapsed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| compileall 指定全目录 | 不适用 | 成功 | 0 | 0 | 1.945s |
+| 全量 unittest | 1353 | 1337 / 1337 | 0 | 16 | 348.550s |
+| Hunter 完整专项 | 311 | 311 / 311 | 0 | 0 | 211.985s |
+
+相比基线新增 139 项测试；311=原 Hunter 172+新增139，1353=原全量1214+新增139。全量的16个 skip 来自未修改的既有 Windows 平台条件，不是新增永久跳过。Linux 由本 PR 的原有 Tests workflow（Ubuntu/Python3.12）验证，最终状态以 PR 最终 HEAD check 为准，不用 Windows 结果冒充 Linux 结果。
+
+执行命令：
+
+```text
+python -m compileall -q radars shared runtime config tests scripts main.py
+python -m unittest discover -s tests -t . -p "test_*.py"
+python -m unittest discover -s tests/altcoin_hunter_tests -t . -p "test_*.py"
+git diff --check
+```
+
+新域完整专项、三条实际 CLI、最终容量进程：外部网络连接尝试0、DNS0、HTTP/WS0、真实Telegram0、生产文件写入0。全量旧测试加载 urllib3 时有6次本地 IPv6 `socket.bind` 能力探测，被隔离钩子阻止；这是旧库本地探测，不是外部行情连接，不能把这6次也写成“所有 socket API 调用0”。Windows 标准库 asyncio socketpair 的本机唤醒通道由隔离器单独识别；未放行任意客户端连接。全量输出中的 Telegram 故障日志来自旧测试 mock，不表示真实发送。
+
+三条实际 CLI 均退出0，状态ok、offline_dry_run、network_calls=0、dns_calls=0、real_send=false：
+
+- validate-binance-fixture：0.212s，digest `b7894ff2bef91d66aaa0b0f3eeb37966fea55c63556d8139c609c6f62b69a60f`。
+- plan-binance-subscriptions：0.221s，digest `322044fa239d4da8780811e2d04678ee394bcedb3c27149ce3be16130afec5b4`。
+- simulate-binance-connection：0.248s，digest `3186fa01e78bbae1015019ffb14d527d1ae42510cf5af2a3d08bb9efcc73a639`。所选 MARKET shard ACTIVE/epoch1；无 pending ACK/control；REST 演示请求取消后 queue/inflight 均0。
+
+### P1B-I 离线容量
+
+全量回归结束后单独执行 `python -B -m tests.altcoin_hunter_tests.binance_capacity`，总进程耗时5.091s。以下均启用 tracemalloc，是 Python allocation 峰值，不是进程 RSS、服务器内存承诺或真实网络吞吐。
+
+| eligible / promoted | MARKET streams | PUBLIC streams | 漏订阅 | plan ms | 增删两次 diff 合计 ms | Python peak bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 600 / 30 | 601（1连接） | 31（1连接） | 0 | 48.069 | 17.694 | 1,720,673 |
+| 1000 / 50 | 800+201（2连接） | 51（1连接） | 0 | 83.898 | 37.041 | 2,834,538 |
+| 1500 / 75 | 800+701（2连接） | 76（1连接） | 0 | 135.770 | 47.664 | 4,385,065 |
+
+三个规模增加/删除10%时，存续 Stream 迁移数均0；全部连接≤800。Mark 全局流和 BBO 全局流均计入槽位；liquidation默认未启用，不能把它记为已订阅。规划摘要分别为 `0645c1ca6099a54f9f165c9d4b1e7bc4f2179b7bfe145cf06c64399513bbce70`、`3a1c9a089ca804636c46e52370de1426aee4e7242f5d3c7aaaaa5669e3244da7`、`f0f94b9964b7148abafa0f9b70ce9d8e842bc6158b181c55f68c330d23a003d9`。
+
+单帧2000项全市场 Mark 数组；每个有效元素产生 Mark+Funding 两个事件：
+
+| 坏元素比例 | typed events | rejects | seconds | events/s | rejects/s | Python peak bytes | 拒绝详情 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1% | 3960 | 20 | 0.909190 | 4355.53 | 22.00 | 6,262,539 | 20 |
+| 10% | 3600 | 200 | 0.945179 | 3808.80 | 211.60 | 5,494,919 | 64 |
+| 50% | 2000 | 1000 | 0.512093 | 3905.54 | 1952.77 | 2,971,247 | 64 |
+
+细节被截断时总拒绝计数不丢失；跨帧 diagnostics capacity=128。帧内坏币不丢弃正常兄弟元素。
+
+100轮重连：101次连接尝试、100次 reconnect、101个epoch、303批ACK成功。ACK丢失使用499币+1全局流=10批，精确丢1批（10%），9批确认后因缺ACK超时进入BACKOFF；pending ACK峰值8，不错误进入ACTIVE。模拟限定所选分片，不冒称同时运行全部市场连接。
+
+OI模型：1500币，100个申请高频、80个获高频、20个overflow明确标degraded。使用同一虚拟时刻的假200响应得到初始1500条，60s时排80个请求；尚未响应时 freshness 覆盖1400/1500（93.333%）。这不是测得每秒1500次HTTP采样；结束取消80个待办，queue/inflight均0。
+
+最终容量确定性摘要：`963cd0ff217f27a7391b9f5217ebd0dd82fcc69c1a32f75f4f1edd4743b2b5d3`。摘要排除耗时/内存测量；CLI、parser和connection专项验证相同输入/seed/版本得到相同结果。
+
+### P1B-I 剩余边界
+
+尚无真实 Transport、共享生产 Coordinator、公开行情 Smoke、长期运行/恢复/保留策略或服务器容量验证。官方 catalog 与订阅说明的 ACK ID 类型存在差异，3s Mark 的官方 wire 为无后缀形式；P1B-II 必须重新核对。BBO不代表深度，清算是快照，未知canonical/倍率不得猜测，默认阈值/预算未经市场或生产校准。
+
+本轮只提交并创建 Draft PR，不转Ready、不合并、不部署。后续 P1B-II 须另行授权、重验基线、明确共享预算和退出条件；本记录不启动任何真实连接。
