@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "recipe": {
+    "instruments": 2,
+    "minutes": 4,
+    "seed": 42,
+    "pattern": "epoch",
+    "start_ms": 1704067200000,
+    "trades_per_minute": 2
+  }
+}
