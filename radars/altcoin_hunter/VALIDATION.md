@@ -184,3 +184,51 @@ OI模型：1500币，100个申请高频、80个获高频、20个overflow明确�
 尚无真实 Transport、共享生产 Coordinator、公开行情 Smoke、长期运行/恢复/保留策略或服务器容量验证。官方 catalog 与订阅说明的 ACK ID 类型存在差异，3s Mark 的官方 wire 为无后缀形式；P1B-II 必须重新核对。BBO不代表深度，清算是快照，未知canonical/倍率不得猜测，默认阈值/预算未经市场或生产校准。
 
 本轮只提交并创建 Draft PR，不转Ready、不合并、不部署。后续 P1B-II 须另行授权、重验基线、明确共享预算和退出条件；本记录不启动任何真实连接。
+
+## P1B-I Final Connection & Admission Hardening（2026-09-05）
+
+本节是原 Draft PR #173 的追加验收，覆盖前文初版的连接/准入语义；前文容量与测试数据是历史记录，不冒充此次结果。起始 HEAD 为 `56e47fbe6c456d162a2e081e74fc807b892ac6c5`，原分支 `codex/altcoin-hunter-p1b-public-data-adapters`；main/base仍为 `e7622becdec46c179d97820f0769790b9a49e3af`。开始检查精确本地/远端HEAD一致、工作区/暂存/未跟踪为空、PR OPEN/Draft/MERGEABLE、1 commit/63 files、对应HEAD的Tests成功；comments/reviews/threads均为空。无Git进行中操作和当前工作树Bot/Python占用，其他worktree不操作，已遵守根AGENTS.md。
+
+只改connection/ingestion/adapters/base/rest_scheduler、离线CLI合同、本域专项测试及两份文档。subscription_plan与rest_budget未改；configuration/models/identity/universe/aggregation/windows/baselines/quality/storage/read_model/migrations与已合并P1A保持相同Git blob。Schema v1仍七表，无SQL/checksum变更。80个ignored配置/DB/锁/运行时文件SHA-256在前后完全一致；旧策略、shared、runtime/cli.py、主调度、部署、依赖及生产配置零diff。
+
+### 根因与修复证据
+
+- 生命周期：原累计reconnect同时影响退避及熔断。现在六项独立counter；只有连续失败影响退避/预算，默认稳定窗口30000ms、全部必要ACK后持续ACTIVE且liveness有效才复位。计划recycle独立原因/counter，TCP open不复位。未知丢帧先截断last_good，再判断稳定；坏frame/ACK不能借先推进时钟清零失败。ACK到达先检查所有deadline，不能在PONG/其他ACK/recycle过期后重开Coverage。
+- `test_binance_connection_hardening.py`：连续3次失败→DEGRADED/无下次连接；短暂ACTIVE后失败继续累计；稳定后清零。100次稳定恢复累计reconnect=100、activations=101，第101次普通失败仍可恢复，退避一直≤1200ms而非历史锁死在最大值。100次计划轮换planned=100、consecutive=0、budget_exhausted=0、epoch=101。gap/坏帧/route mismatch/坏ACK的不可信静默区间不能计作稳定。
+- 动态订阅：active/desired/adding/retiring/acknowledged及generation分离；retiring在退订ACK前与2秒tombstone内安全隔离，不关连接、不进聚合；adding早到帧隔离。SUB/UNSUB两种顺序、多批部分ACK、更新超时、旧generation/method、route mismatch、重连新epoch、同计划无过渡、真正未知stream和Stop清理均验证。默认tombstone容量2048，容量不足显式失败；更新期间Coverage关闭。
+- ACK：INTEGER默认与STRING两种策略，类型和值精确，bool/null/非法字符串拒绝。确定性ASCII字符串≤64字符；两个策略都覆盖duplicate/stale/method/generation，旧整数测试继续执行。
+- `test_binance_base_hardening.py`及连接测试：Combined接受有界无害未知顶层字段，计unknown_envelope_field且诊断不含其原文；缺stream/data、类型错、字段数/深度/字符串/总字节/循环/非有限值均拒绝。ExchangeInfo独立默认8MiB、有限最大64MiB，WS仍1,000,000 bytes；2000个合成instrument实际跨越WS上限但可按显式目录limit解析。Preflight仅不可变字段合同，本轮未执行真实预检。
+- `test_binance_admission_hardening.py`：OI只通过REST_PUBLIC，Trade不能走REST；WS原ACTIVE/ACK/epoch/liveness门禁保留，REPLAY须显式离线来源。REST需原scheduler签发的accepted Completion和精确request_id/generation/endpoint/instrument；复制、伪造、过期、新generation、退休及未来event拒绝。OI不需要WS订阅或epoch。
+- 拒绝计数：100项parser拒绝（只保留1条详情）、1项admission拒绝、1项重复，结果分别为100/1/1，总数102；仅parser拒绝100时总数仍100。正常metadata在筛选后保持对齐，REST/REPLAY另标来源。
+- `test_binance_rest_hardening.py`：queued/inflight退休不提前遗忘，迟到响应stale；tombstone容量2/TTL100ms的小规模注入覆盖容量和过期；4100个历史identity退休后仍可加入新币。generation floor防过期后复活，Planner采用该下限；旧/重复retry响应不覆盖最新有效receipt，旧代OI不更新last-good。
+
+### 最终隔离验证
+
+Windows / Python 3.14.7。所有完整验证在独立临时副本（final-full/final-special/final-cli/final-capacity）执行，只复制Git文件与此次新专项测试，不复制生产.env或ignored DB；环境变量白名单及审计钩子阻止外部socket/DNS、原仓库写入及原仓库DB连接。源码在测试前冻结，最终提交再次与已测试副本比较。
+
+- `python -m compileall -q radars shared runtime config tests scripts main.py`：exit0，1.913s。
+- `python -m unittest discover -s tests -t . -p "test_*.py"`：collected/runner=1430；实际执行/通过1414；failed=0；原有Windows条件skipped=16；runner330.092s，进程331.063s。
+- `python -m unittest discover -s tests/altcoin_hunter_tests -t . -p "test_*.py"`：collected/executed/passed=388；failed/skipped=0；runner199.945s，进程200.621s。
+- 原全量1353/Hunter311，本次净增77项test methods；无旧方法删除、无新增永久skip。只把原累计重连预算测试改为明确的连续失败场景，原300次Coverage缓存测试显式推进稳定窗口；OI旧断言改用真实虚拟request→dispatch→Completion，覆盖/年龄/失败断言保持。
+- `git diff --check`通过。编译、全量与Hunter包含P1A六窗口、聚合、基线、写失败/locked/100k临时库等回归，不改旧断言。
+- Linux / Python3.12由原Tests workflow验证新增提交，最终run链接和精确HEAD结果记录在PR描述与完成报告；不把起始56e47fb的绿色check当成本次CI。
+
+Hunter专项、三个实际CLI、离线容量：外部网络尝试0、DNS0、HTTP/WS0、真实Telegram0、生产DB/文件写入0。全量旧测试加载urllib3触发6次本地IPv6 socket.bind能力探测，均被隔离钩子拦截；并非外部行情连接，不声称所有socket API调用为0。Windows标准库asyncio本机socketpair仍由隔离器识别，未开放任意网络客户端。GitHub审计/push/PR操作与Hunter运行时计数分开。旧测试Telegram故障日志来自mock。
+
+### 实际离线CLI与容量回归
+
+三个 `python -B -m runtime.altcoin_hunter` 命令均exit0、status=ok、mode=offline_dry_run、network_calls/dns_calls=0、real_send=false：
+
+- validate-binance-fixture，agg_trade静态fixture：0.249s；digest `0f9aab3fd4bd4759952f9e28e94e16be2803b5658874cc913b7c44968d8c5113`。
+- plan-binance-subscriptions，exchange_info静态目录：0.245s；digest `c449e88e920dbd09917702f18872247220e897d54454efc82bc4cd8ce4a1053b`。
+- simulate-binance-connection，normal/seed42：0.297s；digest `c036b348c297a294d8a4530bb5390f485d465efa5b6046a9fada0bc8913ff027`。INTEGER、ACTIVE/epoch1、pending ACK/control=0，REST演示结束queue/inflight=0；没有伪造OI行情值。STRING选项另由受保护CLI子进程重复两次验证一致。
+
+容量进程5.648s，与完整回归同时运行，耗时不代表独占机器峰值，更不是网络吞吐。600/1000/1500分别规划MARKET 601 / 800+201 / 800+701个stream，PUBLIC 31/51/76，连接数1+1/2+1/2+1。漏订阅和增删10%的存续迁移均0。规划53.311/98.276/115.945ms，两次diff合计35.756/42.769/55.729ms；Python allocation峰值1,719,897/2,834,538/4,385,065 bytes。
+
+2000项Mark数组坏元素1%/10%/50%，events=3960/3600/2000、rejects=20/200/1000，details=20/64/64；协议events/s约3955.70/3838.88/3328.02，rejects/s约19.98/213.27/1664.01，Python allocation峰值6,262,827/5,494,919/2,971,247 bytes。原parser未改。100轮恢复epoch101、reconnect100、stable_activation100；10% ACK丢失仍BACKOFF，pending峰值8。OI 1500币合成200响应全部按Completion关联，60秒80个高优请求，freshness1400/1500，最后queue/inflight0。容量确定性摘要 `3d939c53a2dccf562feb6109d577c0c1ba43627ae827495a14a1af94f149ee7c`。
+
+### 交付与剩余边界
+
+只向原分支追加一个hardening提交并更新原Draft PR #173；不重写初版历史，不转Ready、不合并。停止离线命令即可停止本域；代码回滚须重新安全检查后以新提交反向回退该hardening提交，不重写公开历史。没有生产部署，因此不需要服务重启、数据库迁移/删除或生产配置回滚。
+
+未实施真实Transport/共享生产Coordinator、DNS/HTTP/WS公开行情、ExchangeInfo真实大小预检、Smoke/长期soak、Web/Telegram/链上、信号/评分/策略状态机/Outcome、生产服务或自动交易。ACK互通模式、真实载荷大小、共享IP预算与长期容量仍待另行P1B-II/P1C验证。稳定窗口与tombstone是可配置工程默认值，尚无生产时延校准。Completion关联是有界进程内合同，不是跨进程持久凭证；新adapter调用者须显式传目录limit和当前身份代，不能依赖历史默认值。

@@ -98,3 +98,26 @@ class BinanceCliTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["rejected_items"], 1)
         self.assertEqual(payload["network_calls"], 0)
+        self.assertEqual(payload["parser_rejected_count"], 1)
+        self.assertEqual(payload["admission_rejected_count"], 0)
+        self.assertEqual(payload["duplicate_count"], 0)
+        self.assertEqual(payload["total_rejected_count"], 1)
+
+    def test_explicit_string_ack_strategy_is_deterministic_offline(self):
+        args = ["simulate-binance-connection", "--scenario", "normal", "--seed", "42",
+                "--ack-id-strategy", "STRING"]
+        first, second = self.assert_success(invoke(args)), self.assert_success(invoke(args))
+        self.assertEqual(first, second)
+        self.assertEqual(first["ack_id_strategy"], "STRING")
+        self.assertEqual(first["state"], "ACTIVE")
+
+    def test_directory_limit_is_explicit_and_not_a_live_measurement(self):
+        args = self.validate_args("exchange_info", "exchange_info.json")
+        result = self.assert_success(invoke(args + ["--exchange-info-max-bytes", "9000000"]))
+        self.assertEqual(result["exchange_info_max_bytes"], 9000000)
+        self.assertFalse(result["exchange_info_preflight_executed"])
+        for bad in ("0", "-1", "999999999", "1"):
+            with self.subTest(limit=bad):
+                result = invoke(args + ["--exchange-info-max-bytes", bad])
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(json.loads(result.stdout)["real_send"])

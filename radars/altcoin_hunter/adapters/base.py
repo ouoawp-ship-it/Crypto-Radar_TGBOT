@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
 import json
+import math
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol
 import unicodedata
@@ -62,6 +63,167 @@ class ParseLimits:
                               ("max_string_length", 65536), ("max_payload_bytes", 8_000_000),
                               ("max_rejected_items", 1024)):
             strict_int(getattr(self, name), name, minimum=1, maximum=ceiling)
+
+
+@dataclass(frozen=True)
+class EnvelopeLimits:
+    """Independent limits for an already-decoded WebSocket envelope.
+
+    Limits include unknown fields. Counting happens during bounded traversal,
+    before serialization, so a large extension cannot bypass the frame budget.
+    """
+
+    max_items: int = 2048
+    max_depth: int = 8
+    max_string_length: int = 4096
+    max_payload_bytes: int = 1_000_000
+    max_top_level_fields: int = 32
+    max_fields_per_object: int = 256
+    max_total_fields: int = 65536
+    max_total_values: int = 131072
+    max_stream_length: int = 256
+
+    def __post_init__(self) -> None:
+        for name, ceiling in (("max_items", 16384), ("max_depth", 32),
+                              ("max_string_length", 65536),
+                              ("max_payload_bytes", 8_000_000),
+                              ("max_top_level_fields", 1024),
+                              ("max_fields_per_object", 4096),
+                              ("max_total_fields", 262144),
+                              ("max_total_values", 524288),
+                              ("max_stream_length", 4096)):
+            strict_int(getattr(self, name), name, minimum=1, maximum=ceiling)
+        if self.max_top_level_fields < 2:
+            raise ValueError("invalid_max_top_level_fields")
+
+
+def validate_combined_envelope(message: Any, *, limits: EnvelopeLimits | None = None
+                               ) -> tuple[str, Any, int]:
+    """Validate required fields and bounded extensions without retaining values.
+
+    Returns the original stream/data and the number of unknown top-level keys.
+    Values are never included in errors or diagnostics. Unknown finite JSON
+    scalars are allowed; strict market-field validation remains the parser's job.
+    """
+    policy = limits if limits is not None else EnvelopeLimits()
+    if not isinstance(policy, EnvelopeLimits):
+        raise ValueError("invalid_envelope_limits")
+    if not isinstance(message, Mapping) or "stream" not in message or "data" not in message:
+        raise ValueError("malformed_combined_envelope")
+    if len(message) > policy.max_top_level_fields:
+        raise ValueError("too_many_items")
+    stream, data = message["stream"], message["data"]
+    if type(stream) is not str or not isinstance(data, Mapping) and type(data) is not list:
+        raise ValueError("invalid_field_type")
+    if (not stream or len(stream) > policy.max_stream_length or not stream.isascii()
+            or any(ord(char) <= 32 or ord(char) == 127 for char in stream)):
+        raise ValueError("malformed_combined_envelope")
+
+    byte_count = field_count = value_count = 0
+    ancestors: set[int] = set()
+
+    def charge(amount: int) -> None:
+        nonlocal byte_count
+        byte_count += amount
+        if byte_count > policy.max_payload_bytes:
+            raise ValueError("oversized_payload")
+
+    def visit(value: Any, depth: int) -> None:
+        nonlocal field_count, value_count
+        value_count += 1
+        if depth > policy.max_depth or value_count > policy.max_total_values:
+            raise ValueError("oversized_payload")
+        if type(value) is str:
+            if len(value) > policy.max_string_length:
+                raise ValueError("oversized_payload")
+            try:
+                charge(len(json.dumps(value, ensure_ascii=False).encode("utf-8")))
+            except UnicodeError as exc:
+                raise ValueError("invalid_json_shape") from exc
+            return
+        if value is None or type(value) in (bool, int, float):
+            if type(value) is float and not math.isfinite(value):
+                raise ValueError("invalid_json_shape")
+            if type(value) is int and value.bit_length() > 64:
+                raise ValueError("oversized_payload")
+            charge(len(json.dumps(value, allow_nan=False)))
+            return
+        if not isinstance(value, Mapping) and type(value) is not list:
+            raise ValueError("invalid_json_shape")
+        if id(value) in ancestors:
+            raise ValueError("invalid_json_shape")
+        is_object = isinstance(value, Mapping)
+        if len(value) > (policy.max_fields_per_object if is_object else policy.max_items):
+            raise ValueError("too_many_items")
+        if is_object:
+            field_count += len(value)
+            if field_count > policy.max_total_fields:
+                raise ValueError("too_many_items")
+        ancestors.add(id(value))
+        charge(2 + max(0, len(value) - 1))
+        try:
+            if is_object:
+                for key, child in value.items():
+                    if type(key) is not str:
+                        raise ValueError("invalid_json_shape")
+                    visit(key, depth + 1)
+                    charge(1)
+                    visit(child, depth + 1)
+            else:
+                for child in value:
+                    visit(child, depth + 1)
+        finally:
+            ancestors.remove(id(value))
+
+    visit(message, 0)
+    return stream, data, len(message) - 2
+
+
+@dataclass(frozen=True)
+class ExchangeInfoPayloadLimits:
+    """Explicit directory-response budget, not a claim about live response size.
+
+    This has the ParseLimits attribute contract and can be passed explicitly to
+    parse_exchange_info(limits=...). It does not raise WebSocket frame limits.
+    """
+
+    max_items: int = 16384
+    max_depth: int = 12
+    max_string_length: int = 65536
+    max_payload_bytes: int = 8 * 1024 * 1024
+    max_rejected_items: int = 64
+
+    def __post_init__(self) -> None:
+        for name, ceiling in (("max_items", 65536), ("max_depth", 32),
+                              ("max_string_length", 1_048_576),
+                              ("max_payload_bytes", 64 * 1024 * 1024),
+                              ("max_rejected_items", 1024)):
+            strict_int(getattr(self, name), name, minimum=1, maximum=ceiling)
+
+
+@dataclass(frozen=True)
+class ExchangeInfoPreflightObservation:
+    """Future transport's explicit size/parse report; constructing it does no IO."""
+
+    http_status: int
+    content_length: int | None
+    actual_body_bytes: int
+    symbol_count: int
+    parse_accepted_count: int
+    parse_rejected_count: int
+
+    def __post_init__(self) -> None:
+        strict_int(self.http_status, "http_status", minimum=100, maximum=599)
+        if self.content_length is not None:
+            strict_int(self.content_length, "content_length")
+        for name in ("actual_body_bytes", "symbol_count", "parse_accepted_count", "parse_rejected_count"):
+            strict_int(getattr(self, name), name)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"http_status": self.http_status, "content_length": self.content_length,
+                "actual_body_bytes": self.actual_body_bytes, "symbol_count": self.symbol_count,
+                "parse_accepted_count": self.parse_accepted_count,
+                "parse_rejected_count": self.parse_rejected_count}
 
 
 @dataclass(frozen=True)

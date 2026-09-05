@@ -8,15 +8,35 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Iterable, Mapping
 from types import MappingProxyType
 
 from .adapters.base import ParseDiagnostics, ParseResult, Route, identifier
 from .models import MarketEvent, strict_int, timestamp_ms
+from .rest_scheduler import Completion, RestScheduler
+
+
+class IngressChannel(str, Enum):
+    WS_MARKET = "WS_MARKET"
+    WS_PUBLIC = "WS_PUBLIC"
+    REST_PUBLIC = "REST_PUBLIC"
+    REPLAY = "REPLAY"
+
+
+EVENT_CHANNELS = MappingProxyType({
+    "trade": IngressChannel.WS_MARKET,
+    "mark_price": IngressChannel.WS_MARKET,
+    "funding": IngressChannel.WS_MARKET,
+    "liquidation": IngressChannel.WS_MARKET,
+    "book_ticker": IngressChannel.WS_PUBLIC,
+    "open_interest": IngressChannel.REST_PUBLIC,
+})
 
 
 @dataclass(frozen=True)
 class AdmissionContext:
+    """WS-only context; the positional Route API remains backwards compatible."""
     route: Route
     connection_epoch: int
     active: bool
@@ -43,16 +63,78 @@ class AdmissionContext:
             return "local_data_loss"
         return None
 
+    @property
+    def channel(self) -> IngressChannel:
+        return IngressChannel.WS_PUBLIC if self.route == Route.PUBLIC else IngressChannel.WS_MARKET
+
+    @classmethod
+    def for_channel(cls, channel: IngressChannel, **kwargs) -> AdmissionContext:
+        channel = IngressChannel(channel)
+        if channel not in (IngressChannel.WS_MARKET, IngressChannel.WS_PUBLIC):
+            raise ValueError("websocket_channel_required")
+        return cls(route=Route.PUBLIC if channel == IngressChannel.WS_PUBLIC else Route.MARKET, **kwargs)
+
+
+@dataclass(frozen=True)
+class RestAdmissionContext:
+    """An accepted scheduler receipt, not a simulated WebSocket subscription.
+
+    request_id and generation are explicit response correlation supplied by the
+    caller. The issuing scheduler validates receipt identity and current state.
+    """
+
+    scheduler: RestScheduler
+    completion: Completion
+    request_id: str
+    generation: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scheduler, RestScheduler) or not isinstance(self.completion, Completion):
+            raise ValueError("invalid_rest_correlation")
+        identifier(self.request_id, "request_id")
+        strict_int(self.generation, "generation")
+
+    @property
+    def channel(self) -> IngressChannel:
+        return IngressChannel.REST_PUBLIC
+
+
+@dataclass(frozen=True)
+class ReplayAdmissionContext:
+    """Explicit offline provenance; never usable as live transport admission."""
+
+    source: str
+
+    def __post_init__(self) -> None:
+        identifier(self.source, "replay_source")
+        if self.source not in ("offline_fixture", "offline_replay", "offline_simulation"):
+            raise ValueError("offline_replay_source_required")
+
+    @property
+    def channel(self) -> IngressChannel:
+        return IngressChannel.REPLAY
+
 
 @dataclass(frozen=True)
 class AdmissionResult:
     events: tuple[MarketEvent, ...]
+    parser_rejected_count: int
+    admission_rejected_count: int
     duplicate_count: int
-    rejected_count: int
     priority_upgrades: int
     diagnostics: dict[str, Any]
     event_metadata: tuple[Mapping[str, Any], ...] = ()
     priority_updates: tuple[Mapping[str, Any], ...] = ()
+
+    @property
+    def total_rejected_count(self) -> int:
+        """All suppressed inputs, including duplicate events (not just faults)."""
+        return self.parser_rejected_count + self.admission_rejected_count + self.duplicate_count
+
+    @property
+    def rejected_count(self) -> int:
+        """Compatibility alias with corrected, inclusive semantics."""
+        return self.total_rejected_count
 
 
 class OfflineIngestion:
@@ -76,9 +158,11 @@ class OfflineIngestion:
         self._bbo: OrderedDict[tuple, tuple[int, int]] = OrderedDict()
         self.dedup_evictions = 0
 
-    def admit(self, result: ParseResult, *, context: AdmissionContext, now_ms: int,
+    def admit(self, result: ParseResult, *, context: AdmissionContext | RestAdmissionContext | ReplayAdmissionContext, now_ms: int,
               promoted: bool | None = None) -> AdmissionResult:
         timestamp_ms(now_ms)
+        if not isinstance(context, (AdmissionContext, RestAdmissionContext, ReplayAdmissionContext)):
+            raise ValueError("explicit_ingress_context_required")
         if promoted is not None and type(promoted) is not bool:
             raise ValueError("invalid_promoted")
         accepted: list[MarketEvent] = []
@@ -88,24 +172,40 @@ class OfflineIngestion:
         for item in result.rejected_items:
             self.diagnostics.record(item.reason, observed_at_ms=now_ms, detail=item.details)
         # Parser aggregate counters include rejects whose bounded detail was omitted.
-        omitted = max(0, result.diagnostics.get("rejected_count", len(result.rejected_items))
-                      - len(result.rejected_items))
+        parser_rejected = max(len(result.rejected_items), strict_int(
+            result.diagnostics.get("rejected_count", len(result.rejected_items)), "parser_rejected_count"))
+        omitted = parser_rejected - len(result.rejected_items)
         if omitted:
             self.diagnostics.record("parser_reject_details_suppressed", observed_at_ms=now_ms, amount=omitted)
         for index, event in enumerate(result.events):
-            reason = context.unavailable_reason
-            expected_route = Route.PUBLIC if event.event_type == "book_ticker" else Route.MARKET
-            if reason is None and context.route != expected_route:
-                reason = "wrong_route"
-            if reason is None and context.connection_epoch != event.connection_epoch:
-                reason = "stale_connection_epoch"
-            if reason is None and event.event_time_ms > now_ms + self.max_future_skew_ms:
+            reason = None
+            expected_channel = EVENT_CHANNELS.get(event.event_type)
+            if expected_channel is None:
+                reason = "unsupported_event_type"
+            elif context.channel != IngressChannel.REPLAY and context.channel != expected_channel:
+                reason = "wrong_ingress_channel"
+            if reason is None and isinstance(context, AdmissionContext):
+                reason = context.unavailable_reason
+                if reason is None and context.connection_epoch != event.connection_epoch:
+                    reason = "stale_connection_epoch"
+            if reason is None and isinstance(context, RestAdmissionContext):
+                if not context.scheduler.validate_completion(context.completion,
+                        request_id=context.request_id, generation=context.generation,
+                        instrument_id=event.instrument_id, now_ms=now_ms, event_time_ms=event.event_time_ms):
+                    reason = "invalid_rest_correlation"
+            future_allowance = self.max_future_skew_ms if isinstance(context, AdmissionContext) else 0
+            if reason is None and event.event_time_ms > now_ms + future_allowance:
                 reason = "future_event_time"
             if reason is not None:
                 rejected += 1
                 self.diagnostics.record(reason, observed_at_ms=now_ms)
                 continue
-            metadata = result.event_metadata[index] if result.event_metadata else {}
+            metadata = dict(result.event_metadata[index]) if result.event_metadata else {}
+            if isinstance(context, ReplayAdmissionContext):
+                metadata.update(ingress_channel=context.channel.value, replay_source=context.source)
+            elif isinstance(context, RestAdmissionContext):
+                metadata.update(ingress_channel=context.channel.value, request_id=context.request_id,
+                                request_generation=context.generation)
             is_promoted = metadata.get("promoted", False) if promoted is None else promoted
             if type(is_promoted) is not bool:
                 raise ValueError("invalid_promoted_metadata")
@@ -148,7 +248,7 @@ class OfflineIngestion:
                 self.diagnostics.record("dedup_horizon_evicted", observed_at_ms=now_ms)
             accepted.append(event)
             accepted_metadata.append(MappingProxyType(dict(metadata)))
-        return AdmissionResult(tuple(accepted), duplicates, rejected, upgrades, self.diagnostics.snapshot(),
+        return AdmissionResult(tuple(accepted), parser_rejected, rejected, duplicates, upgrades, self.diagnostics.snapshot(),
                                tuple(accepted_metadata), tuple(priority_updates))
 
     @property

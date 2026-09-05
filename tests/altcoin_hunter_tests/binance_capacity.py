@@ -88,7 +88,7 @@ def measure_oi(count: int = 1500) -> dict:
         for request in due:
             completion = scheduler.complete(request, status_code=200, response_time_ms=clock[0])
             assert completion.accepted
-            planner.record_result(request.instrument_id, clock[0], clock[0])
+            planner.record_completion(scheduler, completion, event_time_ms=clock[0], now_ms=clock[0])
     initial = planner.coverage(clock[0])
     clock[0] += 60000
     refreshed = planner.schedule(scheduler, clock[0])

@@ -167,9 +167,13 @@ class BinanceConnectionTests(unittest.TestCase):
         self.assertEqual(loss["state"], "BACKOFF")
 
     def test_reconnect_budget_is_hard_bounded(self):
-        result = run_connection_scenario({"name": "reconnect_storm", "reconnects": 100, "max_reconnect_attempts": 3}, seed=1)
-        self.assertEqual(result["counts"]["reconnect_attempts"], 3)
-        self.assertEqual(result["epoch"], 4)
+        # The budget limits consecutive failed recovery attempts, not lifetime
+        # successful reconnects. Three failed opens exhaust this recovery cycle.
+        result = run_connection_scenario({"name": "connect_failures", "failures": 3, "max_reconnect_attempts": 3}, seed=1)
+        self.assertEqual(result["connection_attempts_total"], 3)
+        self.assertEqual(result["reconnect_attempts_total"], 2)
+        self.assertEqual(result["consecutive_reconnect_failures"], 3)
+        self.assertEqual(result["epoch"], 0)
         self.assertEqual(result["state"], "DEGRADED")
         self.assertIsNone(result["next_connect_ms"])
 
@@ -178,6 +182,7 @@ class BinanceConnectionTests(unittest.TestCase):
         activate(connection)
         digest = hashlib.sha256()
         for _ in range(300):
+            connection.step(connection.now_ms + connection.stable_active_ms)
             connection.on_close(now_ms=connection.now_ms + 10)
             interval = connection.snapshot()["coverage"][-1]
             digest.update(json.dumps(interval, sort_keys=True, separators=(",", ":")).encode() + b"\n")

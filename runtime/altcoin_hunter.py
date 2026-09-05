@@ -31,19 +31,26 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--receive-time-ms", required=True, type=int)
     validate.add_argument("--receive-monotonic-ns", required=True, type=int)
     validate.add_argument("--universe", type=Path, help="optional explicit exchangeInfo fixture")
+    validate.add_argument("--exchange-info-max-bytes", type=int, default=8 * 1024 * 1024,
+                          help="finite independent directory payload limit; not a live size measurement")
     plan = commands.add_parser("plan-binance-subscriptions", help="plan route-separated subscriptions offline")
     plan.add_argument("--universe", required=True, type=Path)
     plan.add_argument("--max-streams-per-connection", type=int, default=800)
     plan.add_argument("--promoted-symbols", default="", help="comma-separated exchange symbols")
+    plan.add_argument("--exchange-info-max-bytes", type=int, default=8 * 1024 * 1024)
     simulate = commands.add_parser("simulate-binance-connection", help="run a deterministic local connection scenario")
     simulate.add_argument("--scenario", required=True, help="built-in scenario name or local JSON file")
     simulate.add_argument("--seed", required=True, type=int)
+    simulate.add_argument("--ack-id-strategy", choices=("INTEGER", "STRING"),
+                          help="explicit offline subscription ID strategy; no automatic fallback")
     return parser
 
 
-def _read_offline_json(path: Path):
+def _read_offline_json(path: Path, *, max_bytes: int = 2_000_000):
     # Bound before decoding; no Settings/.env, URI, or remote loader is available.
     import os
+    from radars.altcoin_hunter.models import strict_int
+    strict_int(max_bytes, "offline_fixture_max_bytes", minimum=1, maximum=64 * 1024 * 1024)
     raw_path = str(path)
     windows = PureWindowsPath(raw_path)
     if raw_path.startswith(("\\\\", "//")) or windows.drive.startswith("\\\\") or "://" in raw_path:
@@ -62,8 +69,8 @@ def _read_offline_json(path: Path):
             if attributes & 0x400:
                 raise ValueError("reparse_fixture_path_forbidden")
     with path.open("rb") as handle:
-        raw = handle.read(2_000_001)
-    if len(raw) > 2_000_000:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         raise ValueError("oversized_fixture")
     def pairs(items):
         result = {}
@@ -77,7 +84,9 @@ def _read_offline_json(path: Path):
 
 
 def _binance_offline(args) -> dict:
-    from radars.altcoin_hunter.adapters.base import PROTOCOL_VERSION, deterministic_digest, plain
+    from radars.altcoin_hunter.adapters.base import (
+        PROTOCOL_VERSION, ExchangeInfoPayloadLimits, deterministic_digest, plain,
+    )
     from radars.altcoin_hunter.adapters.binance_usdm import parse_exchange_info
     from radars.altcoin_hunter.adapters.fixtures import FIXTURE_TIME_MS, fixture_registry
     from radars.altcoin_hunter.models import strict_int, timestamp_ms
@@ -85,19 +94,25 @@ def _binance_offline(args) -> dict:
     result = {"status": "ok", "mode": "offline_dry_run", "network_calls": 0,
               "dns_calls": 0, "real_send": False, "protocol_version": PROTOCOL_VERSION,
               "parsed_events": 0, "rejected_items": 0, "route": None,
+              "parser_rejected_count": 0, "admission_rejected_count": 0, "duplicate_count": 0,
+              "total_rejected_count": 0, "admission_status": "not_executed",
               "stream_coverage": {}, "connection_states": {}, "epochs": {},
               "subscription_shards": [], "budget_status": {"status": "not_executed"}}
+    directory_limits = ExchangeInfoPayloadLimits(max_payload_bytes=getattr(args, "exchange_info_max_bytes", 8 * 1024 * 1024))
+    result["exchange_info_max_bytes"] = directory_limits.max_payload_bytes
+    result["exchange_info_preflight_executed"] = False
     if args.command == "validate-binance-fixture":
         from radars.altcoin_hunter.adapters.binance_protocol import parse_binance_payload, parse_funding_info, parse_server_time
         timestamp_ms(args.receive_time_ms)
         strict_int(args.receive_monotonic_ns, "receive_monotonic_ns")
-        fixture = _read_offline_json(args.fixture)
+        fixture = _read_offline_json(args.fixture, max_bytes=directory_limits.max_payload_bytes
+                                     if args.kind in {"exchange_info", "exchangeInfo"} else 2_000_000)
         payload = fixture.get("payload", fixture) if isinstance(fixture, dict) else fixture
-        directory = _read_offline_json(args.universe) if args.universe else (
+        directory = _read_offline_json(args.universe, max_bytes=directory_limits.max_payload_bytes) if args.universe else (
             fixture.get("exchange_info") if isinstance(fixture, dict) else None)
         if isinstance(directory, dict):
             directory = directory.get("exchange_info", directory)
-            parsed_directory = parse_exchange_info(directory, observed_at_ms=args.receive_time_ms)
+            parsed_directory = parse_exchange_info(directory, observed_at_ms=args.receive_time_ms, limits=directory_limits)
             if not parsed_directory.accepted:
                 raise ValueError("invalid_offline_directory")
             registry = parsed_directory.registry
@@ -105,7 +120,7 @@ def _binance_offline(args) -> dict:
             # Explicit, fictional static test registry; never register message symbols.
             registry = fixture_registry()
         if args.kind in {"exchange_info", "exchangeInfo"}:
-            parsed = parse_exchange_info(payload, observed_at_ms=args.receive_time_ms)
+            parsed = parse_exchange_info(payload, observed_at_ms=args.receive_time_ms, limits=directory_limits)
             result.update(directory_status=parsed.status, instruments=[spec.to_dict() for spec in parsed.instruments],
                           rejected_items=(parsed.diagnostics or {}).get("rejected_count", len(parsed.rejected_items)), diagnostics=plain(parsed.diagnostics))
             if not parsed.accepted:
@@ -128,12 +143,15 @@ def _binance_offline(args) -> dict:
             result["route"] = routes[0] if len(routes) == 1 else routes
         if result["rejected_items"]:
             result["status"] = "degraded"
+        result["parser_rejected_count"] = result["rejected_items"]
+        result["total_rejected_count"] = result["rejected_items"]
     elif args.command == "plan-binance-subscriptions":
         from radars.altcoin_hunter.subscription_plan import plan_subscriptions
         from radars.altcoin_hunter.universe import instrument_from_dict
-        payload = _read_offline_json(args.universe)
+        payload = _read_offline_json(args.universe, max_bytes=directory_limits.max_payload_bytes)
         if isinstance(payload, dict) and ("symbols" in payload or "exchange_info" in payload):
-            directory = parse_exchange_info(payload.get("exchange_info", payload), observed_at_ms=FIXTURE_TIME_MS)
+            directory = parse_exchange_info(payload.get("exchange_info", payload), observed_at_ms=FIXTURE_TIME_MS,
+                                            limits=directory_limits)
             if not directory.accepted:
                 raise ValueError("invalid_offline_directory")
             instruments = tuple(spec.to_hunter_instrument() for spec in directory.instruments)
@@ -155,6 +173,9 @@ def _binance_offline(args) -> dict:
         scenario = args.scenario
         if scenario.endswith(".json"):
             scenario = _read_offline_json(Path(scenario))
+        if args.ack_id_strategy is not None:
+            scenario = {"name": scenario} if isinstance(scenario, str) else dict(scenario)
+            scenario["ack_id_strategy"] = args.ack_id_strategy
         simulation = run_connection_scenario(scenario, args.seed)
         result.update(simulation)
         result.update(connection_states={simulation["shard_id"]: simulation["state"]},

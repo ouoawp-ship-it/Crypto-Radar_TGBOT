@@ -247,7 +247,7 @@ bookTicker REST 的 used-weight 响应头按官方说明不用于预算校正。
 
 内部 `canonical_name` 全部小写；`wire_name` 保留官方大小写。用户所称的 3s 逻辑模式对应官方无后缀的 `!markPrice@arr`，不会输出未经官方列出的 `@3s` wire。UM/CM 合并后，当前消息必须有原生整数 `st`：1 才继续处理，2 拒绝，缺失或其他类型拒绝，再由已接受目录复核 symbol。域名不能替代市场校验。
 
-官方当前 catalog 的控制 ID 示例使用字符串，另一官方订阅说明仍列 unsigned integer。本模拟采用后者的正整数 ID，严格匹配值和类型；不声称已通过真实服务器协议互通验证。P1B-II 建立真实 transport 前必须重新核对该文档差异及 Stream 路由。
+官方当前 catalog 的控制 ID 示例使用字符串，另一官方订阅说明仍列 unsigned integer。`AckId = int | str` 支持显式 `INTEGER`（默认）或 `STRING` 策略，不自动切换；后者产生 `ah-e{epoch}-g{generation}-r{sequence}`，最多64个可见ASCII字符。bool、null、空白、控制字符和过长ID拒绝；ACK JSON 类型、值、epoch、method和generation必须精确匹配 PendingAck。Snapshot公开策略。未验证真实互通，P1B-II须另行显式选择和验证。
 
 ### 数据映射与不变量
 
@@ -271,11 +271,27 @@ bookTicker REST 的 used-weight 响应头按官方说明不用于预算校正。
 
 `connection.py` 每 Route/Shard 独立使用 FakeTransport，只有必要 ACK 全齐才 ACTIVE。ACK 的 ID、epoch、类型均严格匹配；控制消息采用 Token Bucket 加滚动一秒上限 8 条，每批最多 50 Streams。虚拟时钟驱动超时、有限指数退避、确定性 jitter 和 23h45m±2m 的主动回收。停止清空 pending ACK/control，不创建 asyncio task。
 
+生命周期统计分为 `connection_attempts_total`、`reconnect_attempts_total`、`consecutive_reconnect_failures`、`successful_activations_total`、`planned_recycles_total`、`reconnect_budget_exhausted_total`。退避指数和预算只看连续失败；达到 `max_reconnect_attempts` 次失败即停止本次恢复周期。TCP open不复位，全部必要ACK后持续ACTIVE且liveness有效达到 `stable_active_ms=30000` 才复位。累计统计不清零；旧 `reconnect_attempts` 仅是累计诊断别名。计划轮换单独记 planned，不计连接失败；轮换后的真正连接/订阅失败仍计入连续失败。重连总数包含计划轮换后的连接尝试。所有时钟均由调用方注入。
+
+动态计划保留 active/desired/adding/retiring/acknowledged Streams 和 `transition_generation`。过渡立即关闭 Coverage；adding 在SUB ACK前丢弃并计 `adding_stream_early_frame`，retiring在UNSUB ACK前及之后的2秒tombstone内丢弃并计 `retiring_stream_frame`，不会因此关闭连接。tombstone默认最多2048项，耗尽时显式失败而不静默遗忘。真正未知Stream仍fail closed；SUB/UNSUB及多批ACK可乱序，但新计划全部应用前不能ACTIVE。重连/Stop清空ACK、过渡活动和tombstone；desired保留为重连目标。相同Stream集合不制造新过渡。
+
+连接层 Combined Envelope 要求受限stream与Mapping/list data，允许最多32个顶层字段并计 `unknown_envelope_field`。全树还限制深度8、单字符串4096字符、数组2048项、每对象256字段、总字段65536、总值131072、紧凑UTF-8编码1,000,000 bytes；上限可通过不可变 `EnvelopeLimits` 有界调整。未知值不进入诊断原文；无害扩展不关连接，缺核心字段或超限仍拒绝。ACK与data入口都先推进虚拟deadline，过期ACK不能重开Coverage。
+
 Coverage 只在 ACTIVE、已 ACK、route/epoch 正确、liveness 有效且无已知本地丢失时开放。关闭时冻结当时的 instrument identity；对未知丢帧区间保守截断，不跨重连补完整分钟。`iter_coverage_records()` 仅在测试中传入 P1A `note_connection()`。闭合区间缓存上限 256，调用方须及时消费；超限累计 `coverage_interval_evicted`，明确 evidence_lost，摘要不能重建丢失区间。收到一笔成交不等于整分钟完整。全市场数组另记录预期/观察数量、缺币/未知币、st 过滤与最新有效时间；缺币不是下架。
 
-`ingestion.py` 拒绝过期 epoch、错误 route、缺 ACK/liveness 和超过显式容差的未来事件。有界去重默认 100000 keys，淘汰计数可见；超出保留跨度不保证全历史 exactly-once。拒绝详情单次默认最多 64；跨帧诊断最多 128 条、每 reason/minute 最多 3 条样本，计数继续增长。诊断只保留稳定 reason 和安全摘要，不保存原始头、URL、Cookie/Authorization/Token。
+`ingestion.py` 使用显式 `IngressChannel`：Trade/Mark/Funding/Liquidation走WS_MARKET，BBO走WS_PUBLIC，OI走REST_PUBLIC；REPLAY必须指定 offline_fixture/offline_replay/offline_simulation来源。旧 `AdmissionContext(Route,...)` 仅兼容WS，可用 `for_channel()` 显式构造WS通道。WS仍校验ACTIVE/ACK/epoch/liveness及未来时间容差；REST没有WS Route或ACK，由 `RestAdmissionContext` 提交调度器原始Completion、request_id及generation。只有当前scheduler签发的accepted对象、精确endpoint/instrument/请求代、未过deadline且event_time不晚于response_time才接受；复制对象、旧代及退休identity拒绝。
+
+`AdmissionResult` 分开报告 parser_rejected_count、admission_rejected_count、duplicate_count；`total_rejected_count` 为三者之和（包含重复抑制，不表示全是协议故障），兼容 `rejected_count` 也返回总数。解析器省略的拒绝详情仍进入总数。离线validate CLI未执行admission时明确标 `admission_status=not_executed`。有界去重默认100000 keys，淘汰计数可见；超出保留跨度不保证全历史exactly-once。拒绝详情单次默认最多64；跨帧诊断最多128条、每reason/minute最多3条样本，计数继续增长。诊断不保存原始头、URL、Cookie/Authorization/Token。
 
 `rest_budget.py` 仅定义 RequestSpec/RateBudget/FakeCoordinator，未接旧协调 DB；未来真实客户端无显式共享预算必须 fail closed。`rest_scheduler.py` 有界队列 4096、inflight 16、最多 3 次 attempt、默认 timeout 5s，处理 408/429/418/5xx/Retry-After，其他 4xx 不盲重试。418 缺头时至少暂停 120s，Retry-After 更长时尊重服务器期限。预算反馈故障后停止准入，显式恢复仍保留封禁。
+
+`reconcile_identities(active_keys)` 显式发布当前请求身份集，或用 `retire_identity(key)` 退休单个身份；key为endpoint/instrument。queued在下次poll取消，inflight直到完成/超时仍保留关联且其响应stale。终结后释放identity，tombstone默认4096项/300秒；过期或容量淘汰不会淘汰正在使用的身份。单调 `minimum_new_identity_generation` 防止有界历史过期后旧generation复活；新调用者须使用不低于该下限的代号，OI Planner自动遵守。历史币种累计超过4096不再永久阻止新币。原Completion凭据只保留每个当前identity最新一份；不能序列化后作为生产信任凭证。OI `record_completion()`/`record_result()`必须有scheduler关联，不能单凭instrument和时间更新last-good。
+
+### ExchangeInfo独立大小合同与后续预检
+
+`ExchangeInfoPayloadLimits`默认8MiB，配置范围1..64MiB，与WS的1,000,000 bytes上限独立；目录还限制最多16384项、深度12、字符串65536字符。CLI的validate/plan用 `--exchange-info-max-bytes` 显式传给目录解析，直接使用 `parse_exchange_info()` 的未来调用者也必须显式传目录limits；本轮不改该纯解析器原有默认行为。测试使用超过1MB的2000项合成目录，不声称真实exchangeInfo小于任何默认值。
+
+`ExchangeInfoPreflightObservation`仅定义未来必须记录的http_status、可空content_length、actual_body_bytes、symbol_count、parse_accepted_count、parse_rejected_count。本轮未请求、未预检、未填造响应值；CLI明确 `exchange_info_preflight_executed=false`。P1B-II需另行授权首次公开HTTP测量并确认实际响应符合显式上限。
 
 OI 默认 NORMAL 300s、HOT/HUNTER/EXTREME 60s，高频最多 80 个；overflow 明示，不能悄悄降低覆盖分母。高/普通最多 3:1 准入并预留高优权重，OI 不阻塞 aggTrade。以上均为离线工程默认值，未经市场或生产 IP 容量校准。
 
@@ -289,6 +305,8 @@ python -B -m runtime.altcoin_hunter plan-binance-subscriptions --universe tests/
 python -B -m runtime.altcoin_hunter simulate-binance-connection --scenario normal --seed 42
 python -B -m tests.altcoin_hunter_tests.binance_capacity
 ```
+
+可用 `simulate-binance-connection --scenario normal --seed 42 --ack-id-strategy STRING` 验证字符串ID；不建立真实连接，不读取生产配置，也不自动切回整数模式。
 
 Fixture 可内嵌 exchange_info；也可用 `--universe` 指定目录。未提供时仅使用代码中明确的虚构 AAA/BBB/1000TEST 目录，不从消息 symbol 自动创建合约。文件读取前拒绝 UNC/设备路径，Windows 同时拒绝映射网络盘及 reparse 组件。simulator 明确模拟一个选定分片，不把全市场订阅计划当成所有连接已建立。输出包含离线模式、零网络/发送、协议版本和确定性摘要；时间/内存性能测量不进入摘要。OI 容量响应是同一虚拟时刻注入的假成功响应，不能据此判断真实 REST 采样吞吐；结束时取消待办并报告清理后的队列。
 

@@ -363,7 +363,7 @@ class OiPlannerTests(unittest.TestCase):
             for request in due:
                 outcome = scheduler.complete(request, status_code=200, response_time_ms=0)
                 self.assertTrue(outcome.accepted)
-                planner.record_result(request.instrument_id, 0, 0)
+                self.assertTrue(planner.record_completion(scheduler, outcome, 0, 0))
                 completed += 1
         self.assertEqual(completed, 1000)
         self.assertEqual(planner.coverage(0)["coverage"], 1)
@@ -381,12 +381,22 @@ class OiPlannerTests(unittest.TestCase):
         self.assertEqual(planner.coverage(0)["high_overflow"], 1)
 
     def test_failures_do_not_erase_last_good_and_future_or_regressing_data_is_rejected(self):
+        clock = VirtualClock(1000)
+        scheduler = RestScheduler(clock=clock, coordinator=FakeCoordinator())
         planner = OiSamplingPlanner()
         planner.update_universe({"A": "NORMAL", "B": "HOT"}, 0)
-        self.assertTrue(planner.record_result("A", 1000, 1000))
-        self.assertFalse(planner.record_result("A", None, 2000, success=False))
-        self.assertFalse(planner.record_result("A", 3000, 2000))
-        self.assertFalse(planner.record_result("A", 999, 2000))
+
+        def completion(generation, status):
+            request = make_request("openInterest", clock.value, instrument_id="A", generation=generation)
+            self.assertTrue(scheduler.submit(request))
+            request, = scheduler.poll_due()
+            return scheduler.complete(request, status_code=status, response_time_ms=clock.value)
+
+        self.assertTrue(planner.record_completion(scheduler, completion(0, 200), 1000, 1000))
+        clock.value = 2000
+        self.assertFalse(planner.record_completion(scheduler, completion(1, 400), None, 2000))
+        self.assertFalse(planner.record_completion(scheduler, completion(2, 200), 3000, 2000))
+        self.assertFalse(planner.record_completion(scheduler, completion(3, 200), 999, 2000))
         report = planner.coverage(2000)
         self.assertEqual((report["coverage"], report["oldest_age_ms"], report["missing_instruments"], report["oi_failures"]), (.5, 1000, 1, 3))
 
@@ -406,8 +416,8 @@ class OiPlannerTests(unittest.TestCase):
         self.assertEqual(len(planner.schedule(scheduler, 0)), 1)
         self.assertEqual(planner.schedule(scheduler, 0), ())
         request, = scheduler.poll_due()
-        scheduler.complete(request, status_code=500, response_time_ms=0)
-        planner.record_result("A", None, 0, success=False)
+        completion = scheduler.complete(request, status_code=500, response_time_ms=0)
+        self.assertFalse(planner.record_completion(scheduler, completion, None, 0))
         self.assertEqual(planner.schedule(scheduler, 0), ())
         # The planner changes only OI coverage; no trade or aggregation object
         # is imported, controlled, or paused on this failure path.
