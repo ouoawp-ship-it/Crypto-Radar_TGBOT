@@ -55,15 +55,16 @@ class StreamSpec:
         expected = {
             "agg_trade": (Route.MARKET, f"{(self.symbol or '').lower()}@aggTrade", 100),
             "mark_price": (Route.MARKET, "!markPrice@arr" if self.expected_interval_ms == 3000 else "!markPrice@arr@1s", self.expected_interval_ms),
+            "mark_price_symbol": (Route.MARKET, f"{(self.symbol or '').lower()}@markPrice" + ("@1s" if self.expected_interval_ms == 1000 else ""), self.expected_interval_ms),
             "book_ticker_all": (Route.PUBLIC, "!bookTicker", 5000),
             "book_ticker": (Route.PUBLIC, f"{(self.symbol or '').lower()}@bookTicker", 0),
             "liquidation": (Route.MARKET, "!forceOrder@arr", 1000),
         }.get(self.kind)
         if expected is None or expected != (self.route, self.wire_name, self.expected_interval_ms):
             raise ValueError("stream_route_or_wire_name_mismatch")
-        if self.kind == "mark_price" and self.expected_interval_ms not in (1000, 3000):
+        if self.kind in {"mark_price", "mark_price_symbol"} and self.expected_interval_ms not in (1000, 3000):
             raise ValueError("invalid_mark_interval")
-        if self.kind in {"agg_trade", "book_ticker"}:
+        if self.kind in {"agg_trade", "book_ticker", "mark_price_symbol"}:
             if self.symbol != _symbol(self.symbol):
                 raise ValueError("symbol_must_be_canonical_uppercase")
             if not isinstance(self.instrument_id, str) or not self.instrument_id or len(self.instrument_id) > 128:
