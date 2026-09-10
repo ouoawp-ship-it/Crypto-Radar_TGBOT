@@ -24,6 +24,28 @@ class CountingSignalEventStore(SignalEventStore):
 
 
 class SignalEventStoreTests(unittest.TestCase):
+    def test_retired_consolidation_history_survives_schema_reopen(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = self.settings_for(tmp)
+            # Simulate a historical record imported before removal, not live delivery.
+            count = append_from_push(
+                settings, template_id="TG_CONSOLIDATION_BREAKOUT",
+                dedup_key="historical:consolidation:BTCUSDT", status="sent",
+                sent=True, text="BTCUSDT historical breakout", ts=1000,
+            )
+            self.assertEqual(count, 1)
+            store = SignalEventStore(settings.signal_events_db_path)
+            with store.connect() as conn:
+                # Exercise the initialization cleanup path, not just cached reads.
+                conn.execute("UPDATE signal_store_meta SET value = '0' WHERE key = 'schema_version'")
+                self.assertFalse(store._schema_is_current(conn))
+                store._ensure_schema(conn)
+            rows = store.list_signals()["items"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["module"], "consolidation")
+            self.assertEqual(rows[0]["template_id"], "TG_CONSOLIDATION_BREAKOUT")
+            self.assertEqual(rows[0]["symbol"], "BTCUSDT")
+
     def settings_for(self, tmp: str) -> Settings:
         return Settings(
             data_dir=Path(tmp),

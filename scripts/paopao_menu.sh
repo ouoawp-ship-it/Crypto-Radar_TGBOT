@@ -93,14 +93,6 @@ labels = {
     "RADAR_SUMMARY_ENABLE": "资金摘要自动运行",
     "FUNDING_ALERT_ENABLE": "资金费率警报自动运行",
     "FLOW_RADAR_ENABLE": "五因子资金流自动运行",
-    "CONSOLIDATION_BREAKOUT_ENABLE": "盘整突破雷达自动运行",
-    "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "三推背离识别",
-    "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE": "1H箱体临界预警",
-    "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE": "1H临界预警影子模式",
-    "CONSOLIDATION_DAILY_PRODUCT_ENABLE": "日线盘整产品计算",
-    "CONSOLIDATION_DAILY_SHADOW_MODE": "日线盘整影子模式",
-    "CONSOLIDATION_DAILY_DIGEST_ENABLE": "日线盘整日报",
-    "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE": "日线边界事件",
     "ANNOUNCEMENT_RISK_ENABLE": "公告风险自动运行",
 }
 values = json.load(sys.stdin)
@@ -412,7 +404,6 @@ telegram_topic_setup_menu() {
 4. 测试消息
 5. 资金流雷达
 6. 资金费率警报
-7. 盘整突破雷达
 0. 返回
 EOF
     IFS= read -r choice
@@ -423,7 +414,6 @@ EOF
       4) template="TG_TEST_MESSAGE" ;;
       5) template="TG_FLOW_RADAR" ;;
       6) template="TG_FUNDING_ALERT" ;;
-      7) template="TG_CONSOLIDATION_BREAKOUT" ;;
       0) return ;;
       *) printf '无效选项。\n'; continue ;;
     esac

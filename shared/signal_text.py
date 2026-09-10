@@ -8,10 +8,12 @@ TEMPLATE_LABELS = {
     "TG_LAUNCH_ALERT": "脉冲雷达",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
+    # Historical messages remain readable after the radar has been removed.
     "TG_CONSOLIDATION_BREAKOUT": "盘整突破雷达",
     "TG_RADAR_SUMMARY": "资金摘要",
     "TG_ANNOUNCEMENT_ALERT": "公告风险",
 }
+# Also used by history maintenance; retained labels must not trigger data deletion.
 ACTIVE_SIGNAL_TEMPLATE_IDS = frozenset((*TEMPLATE_LABELS, "TG_TEST_MESSAGE"))
 
 SYMBOL_ALIASES = {

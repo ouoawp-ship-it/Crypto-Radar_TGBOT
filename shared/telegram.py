@@ -265,7 +265,6 @@ TOPIC_TEMPLATE_NAMES = {
     "TG_TEST_MESSAGE": "测试消息",
     "TG_FLOW_RADAR": "资金流雷达",
     "TG_FUNDING_ALERT": "资金费率警报",
-    "TG_CONSOLIDATION_BREAKOUT": "盘整突破雷达",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "山寨合约异动",
 }
 
@@ -273,20 +272,9 @@ PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS = frozenset({
     "TG_ALTCOIN_CONTRACT_ANOMALY",
 })
 
-# These templates must carry a valid positive forum-topic ID on every real
-# request.  They may still be created by the explicit telegram-topic-setup
-# operation; normal delivery never falls back to the group's General topic.
-STRICT_TOPIC_TEMPLATE_IDS = frozenset({
-    "TG_CONSOLIDATION_BREAKOUT",
-})
+# Retired templates cannot be revived by stale saved routes or direct callers.
+RETIRED_TOPIC_TEMPLATE_IDS = frozenset({"TG_CONSOLIDATION_BREAKOUT"})
 
-
-def _positive_topic_thread_id(value: object) -> int:
-    try:
-        thread_id = int(str(value or "").strip())
-    except (TypeError, ValueError):
-        return 0
-    return thread_id if thread_id > 0 else 0
 
 PRODUCTION_TOPIC_TEMPLATE_IDS = (
     "TG_RADAR_SUMMARY",
@@ -301,7 +289,6 @@ TOPIC_INTRO_VERSIONS: dict[str, str] = {
     "TG_ANNOUNCEMENT_ALERT": "2026-08-04-announcement-risk-v1",
     "TG_LAUNCH_ALERT": "2026-08-27-pulse-universe-v4",
     "TG_FLOW_RADAR": "2026-08-31-flow-p2-v1",
-    "TG_CONSOLIDATION_BREAKOUT": "2026-09-01-consolidation-breakout-v8",
     "TG_ALTCOIN_CONTRACT_ANOMALY": "2026-08-08-altcoin-contract-anomaly-v1",
 }
 
@@ -501,71 +488,6 @@ def topic_intro_message(template_id: str, settings: Settings) -> str:
         "- 如果摘要因长度被拆成多条消息，会保留最新一轮的全部分段。",
         "- 普通推送只保留本轮数据、达标分类、判断和数据确认；不构成投资建议。",
         ])
-    if template_id == "TG_CONSOLIDATION_BREAKOUT":
-        timeframes = " / ".join(
-            str(item).upper()
-            for item in settings.consolidation_breakout_timeframes
-        )
-        return "\n".join([
-            "📌 <b>盘整突破雷达话题说明</b>",
-            "",
-            "这里专门推送已确认收线的盘整突破、跌破、真假验证和三推背离结构，并汇总每日1D盘整地图。",
-            "",
-            "<b>扫描与结构周期</b>",
-            "- 默认覆盖 Binance USDⓈ-M 全部严格认定为加密货币的活跃 USDT 永续合约；稳定币、传统金融映射和未知资产不会进入候选池。",
-            f"- 按合约代码稳定轮转，每批最多 {int(settings.consolidation_breakout_scan_limit)} 个；轮转进度会持久化，重启后继续。",
-            "- 以约520个合约、每批40个、每5分钟一批计算，完整覆盖约需70分钟；达到条件的标的在所属批次立即推送。",
-            f"- 旧多周期路径保持不变：{timeframes} 各自识别24 / 72 / 240根冻结箱体。",
-            "- 自适应1D产品另用短期20/30/40/50、中期60/90/120/150、长期180/240/300/360/420/500根锚点，并选最长合格结构。",
-            "- 自适应1D读取620根历史，采用5%影线裁剪、K线覆盖率、收盘覆盖率、触碰簇、箱宽、路径效率和边界稳定性硬门槛。",
-            f"- 调度默认每{seconds_cn(settings.consolidation_breakout_interval_sec)}检查一次，只使用延迟{seconds_cn(settings.consolidation_breakout_close_delay_sec)}后已确认闭合的K线。",
-            "",
-            "<b>1D结构、4H预警与日报</b>",
-            "- 1D收盘负责识别并冻结日线箱体；闭合4H K线只负责越界早期预警，不等同于1D确认；下一根1D收盘再独立确认日线事件。",
-            "- 每日地图对应北京时间08:00闭合的UTC日K，但不是08:00定点推送；必须等同一目标日K完成全市场轮转覆盖后才汇总一次。",
-            "- 日报默认最多展示20个重点结构，完整结构留在最近7份有界快照；待发只保留最新一份，失败按指数退避，不会恢复后集中补发旧日报。",
-            "",
-            "<b>1H箱体临界预警</b>",
-            "- 独立产品用闭合1H K线冻结24 / 72 / 240根箱体，以15m优先、1H兜底提示价格正在测试上下沿；临近不是突破确认。",
-            "- 同一箱体同一方向的一次接近过程只推一次；退回边界至少0.60 ATR并连续保持两根1H后才重新武装。",
-            "- 影线越界归扫盘，收盘越界归原突破事件；这些结构事件优先，不再重复发送临近预警。",
-            "- 4H / 1D / 1W共振只比较同方向冻结边界，并列明命中周期；没有命中时写明仅1H结构，不代表胜率或必然突破。",
-            "",
-            "<b>会推送的即时事件</b>",
-            "1. 确认上破 / 确认下破：收盘越过冻结箱体边界和ATR缓冲。",
-            "2. 放量突破 / 放量跌破：突破K线相对成交量达到配置门槛。",
-            "3. 假突破 / 假跌破：突破后3根内重新深度收回箱体。",
-            "4. 回踩 / 回抽确认：突破后12根内测试旧边界并再次收在突破方向。",
-            "5. 上沿 / 下沿扫盘：影线越界但收盘仍在箱体内。",
-            "6. 三推顶 / 三推底形成中：三个连续价格枢轴逐次创新高/新低，并分别匹配三个独立的同周期MACD局部峰谷。",
-            "7. 三推背离确认：形成后12根内，收盘越过第二、三推之间冻结的颈线和ATR缓冲。",
-            "",
-            "<b>箱体与三推质量</b>",
-            "- 上下沿各需至少2个分离的触碰簇，并限制箱宽、路径效率和边界漂移。",
-            "- 边界确认后冻结，避免新高/新低移动边界制造伪穿越。",
-            "- 同一币种同一周期同一根K线若多个期限同时触发，只推优先级最高的一条。",
-            "- 价格与MACD枢轴都由左右各2根闭合K线确认，并在前后2根内一一对应，不读取未来数据。",
-            "- 两段价格推进各需至少0.10 ATR，两段MACD各需至少弱化5%；形成前后出现更高高点/更低低点时旧第三推立即作废。",
-            "- 量能递减和箱体边缘共振都满足为“强”，只满足一项为“一般”，两项都不满足为“弱”并仅更新内部状态，不推送。",
-            "- 箱体与三推卡片均取消未经回测校准的/100评分，改用强/标准/观察或强/一般标签，并直接列出通过与未配合的原因及原始数值。",
-            "- 三推按币种和周期独立检测，不会因短/中/长期三个箱体重复。",
-            f"- 三推背离独立开关当前{'已启用' if getattr(settings, 'consolidation_breakout_three_push_enable', False) else '未启用'}。",
-            "",
-            "<b>随信号K线图</b>",
-            "- 旧路径信号继续附带同周期价格K线、成交量和MACD；自适应1D图最多保留620根，足以复核500日结构。",
-            "- 4H越界预警使用1D结构图并明确标为1D STRUCT / 4H TRIGGER，在图上标出4H事件时间和价格，不把它伪装成4H箱体。",
-            "- 1H临界预警使用1H STRUCT / 15m TRIGGER或1H STRUCT / 1H TRIGGER，并标出触发时间和价格。",
-            "- 三推图分别标出价格P1/P2/P3、三个独立MACD枢轴、冻结颈线和失效位。",
-            "- 缺少跨周期图表上下文时只按受限预算补取1D历史；制图或图片校验失败时安全降级为原文字。",
-            "- 图表只用于辅助复核，不参与信号判断、质量标签、排序或去重。",
-            "",
-            "<b>安全门禁</b>",
-            f"- 1H临界预警：{'开' if getattr(settings, 'consolidation_hourly_proximity_enable', False) else '关'}；影子模式：{'开' if getattr(settings, 'consolidation_hourly_proximity_shadow_mode', True) else '关'}。",
-            f"- 自适应1D产品：{'开' if getattr(settings, 'consolidation_daily_product_enable', False) else '关'}；影子模式：{'开' if getattr(settings, 'consolidation_daily_shadow_mode', True) else '关'}；日报：{'开' if getattr(settings, 'consolidation_daily_digest_enable', False) else '关'}；4H边界预警：{'开' if getattr(settings, 'consolidation_daily_boundary_events_enable', False) else '关'}。",
-            "- 新版本默认产品关闭且影子模式开启；真实投递仍必须通过项目统一的发送双门、专属话题路由、去重和outbox。",
-            "",
-            "数据来自 Binance USDⓈ-M Futures 已闭合K线；仅作结构预警，不构成投资建议。",
-        ])
     if template_id == "TG_FUNDING_ALERT":
         return "\n".join([
         "📌 <b>资金费率警报话题说明</b>",
@@ -643,6 +565,8 @@ class TelegramGateway:
         photo: bytes | None = None,
         enrich_market_context: bool = True,
     ) -> PushResult:
+        if template_id in RETIRED_TOPIC_TEMPLATE_IDS:
+            return PushResult("blocked", "telegram_template_retired", False)
         if (
             template_id == "TG_FUNDING_ALERT"
             and signal_records
@@ -752,30 +676,7 @@ class TelegramGateway:
                 signal_records=signal_records,
             )
             return result
-        strict_topic = template_id in STRICT_TOPIC_TEMPLATE_IDS
-        if strict_topic:
-            strict_thread_id = _positive_topic_thread_id(topic_id)
-            if strict_thread_id <= 0:
-                result = PushResult(
-                    "blocked",
-                    "telegram_topic_invalid",
-                    False,
-                )
-                self._record(
-                    history,
-                    template_id,
-                    dedup_key,
-                    result,
-                    text,
-                    topic_id="",
-                    reply_to_message_id=reply_to_message_id,
-                    signal_records=signal_records,
-                )
-                return result
-        force_topic = (
-            template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
-            or strict_topic
-        )
+        force_topic = template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
         if force_topic:
             try:
                 thread_id = int(topic_id)
@@ -1282,6 +1183,8 @@ class TelegramGateway:
         diagnostics.response_ok = error_class == "telegram_ok"
 
     def _topic_id_for_template(self, template_id: str) -> str:
+        if template_id in RETIRED_TOPIC_TEMPLATE_IDS:
+            return ""
         if template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS:
             return self._configured_topic_id_for_template(template_id)
         routed = (
@@ -1295,10 +1198,7 @@ class TelegramGateway:
     def topic_route_configured(self, template_id: str) -> bool:
         """Report route readiness without exposing the configured topic ID."""
 
-        topic_id = self._topic_id_for_template(template_id)
-        if template_id not in STRICT_TOPIC_TEMPLATE_IDS:
-            return bool(topic_id)
-        return _positive_topic_thread_id(topic_id) > 0
+        return bool(self._topic_id_for_template(template_id))
 
     def _configured_topic_id_for_template(self, template_id: str) -> str:
         topic_routes = {
@@ -1308,11 +1208,6 @@ class TelegramGateway:
             "TG_TEST_MESSAGE": self.settings.tg_test_topic_id,
             "TG_FLOW_RADAR": self.settings.tg_flow_radar_topic_id,
             "TG_FUNDING_ALERT": self.settings.tg_funding_alert_topic_id,
-            "TG_CONSOLIDATION_BREAKOUT": str(getattr(
-                self.settings,
-                "tg_consolidation_breakout_topic_id",
-                "",
-            ) or "").strip(),
             "TG_ALTCOIN_CONTRACT_ANOMALY": str(getattr(
                 self.settings,
                 "tg_altcoin_contract_anomaly_topic_id",
@@ -1360,11 +1255,6 @@ class TelegramGateway:
             topic_status = "created"
         if not topic_id:
             return {"status": "failed", "reason": "telegram_topic_setup_failed"}
-        if (
-            template_id in STRICT_TOPIC_TEMPLATE_IDS
-            and _positive_topic_thread_id(topic_id) <= 0
-        ):
-            return {"status": "blocked", "reason": "telegram_topic_invalid"}
         rename_ok = True
         if topic_status == "reused" and template_id == "TG_LAUNCH_ALERT":
             rename_ok = self._rename_forum_topic(
@@ -1417,11 +1307,6 @@ class TelegramGateway:
                 "status": "blocked",
                 "reason": "telegram_topic_not_configured",
             }
-        if (
-            template_id in STRICT_TOPIC_TEMPLATE_IDS
-            and _positive_topic_thread_id(topic_id) <= 0
-        ):
-            return {"status": "blocked", "reason": "telegram_topic_invalid"}
         rename_ok = True
         if template_id == "TG_LAUNCH_ALERT":
             rename_ok = self._rename_forum_topic(
@@ -1565,11 +1450,6 @@ class TelegramGateway:
         require_pin: bool = False,
     ) -> bool:
         if (
-            template_id in STRICT_TOPIC_TEMPLATE_IDS
-            and _positive_topic_thread_id(topic_id) <= 0
-        ):
-            return False
-        if (
             template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
             and topic_id != self._configured_topic_id_for_template(template_id)
         ):
@@ -1612,10 +1492,7 @@ class TelegramGateway:
             intro,
             parse_mode="HTML",
             topic_id=topic_id,
-            force_topic=(
-                template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS
-                or template_id in STRICT_TOPIC_TEMPLATE_IDS
-            ),
+            force_topic=template_id in PRECONFIGURED_ONLY_TOPIC_TEMPLATE_IDS,
         )
         if not ok or not message_ids:
             return False

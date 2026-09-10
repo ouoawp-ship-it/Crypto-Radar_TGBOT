@@ -202,15 +202,16 @@ class MainOnlyMenuTests(unittest.TestCase):
             "MAIN_BOT_DELIVERY_MODE",
             "PULSE_RADAR_ENABLE",
             "脉冲雷达",
-            "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
-            "1H箱体临界预警",
-            "1H临界预警影子模式",
-            "日线盘整影子模式",
-            "日线盘整日报",
-            "日线边界事件",
         ):
             self.assertIn(expected, text)
         for removed in (
+            "CONSOLIDATION_",
+            "盘整突破雷达",
+            "1H箱体临界预警",
+            "1H临界预警影子模式",
+            "日线盘整",
+            "日线边界事件",
+            "三推背离识别",
             "onchain_main.py",
             "paopao-oar-watch",
             "链上活动雷达",

@@ -27,7 +27,7 @@ class PrivateControlSettingsTests(unittest.TestCase):
         self.assertTrue(settings.funding_alert_enable)
         self.assertTrue(settings.flow_radar_enable)
         self.assertTrue(settings.announcement_risk_enable)
-        self.assertFalse(settings.consolidation_breakout_enable)
+        self.assertNotIn("consolidation_breakout_enable", Settings.__dataclass_fields__)
 
     def test_loads_enabled_private_control_without_exposing_admin(self) -> None:
         values = {
@@ -57,7 +57,6 @@ class PrivateControlSettingsTests(unittest.TestCase):
             "FUNDING_ALERT_ENABLE": "false",
             "FLOW_RADAR_ENABLE": "false",
             "ANNOUNCEMENT_RISK_ENABLE": "false",
-            "CONSOLIDATION_BREAKOUT_ENABLE": "true",
             "TG_PRIVATE_CONTROL_ALERT_ENABLE": "true",
             "TG_PRIVATE_CONTROL_ALERT_COOLDOWN_SEC": "7200",
         }
@@ -74,9 +73,38 @@ class PrivateControlSettingsTests(unittest.TestCase):
         self.assertFalse(settings.funding_alert_enable)
         self.assertFalse(settings.flow_radar_enable)
         self.assertFalse(settings.announcement_risk_enable)
-        self.assertTrue(settings.consolidation_breakout_enable)
         self.assertTrue(settings.tg_private_control_alert_enable)
         self.assertEqual(settings.tg_private_control_alert_cooldown_sec, 7200)
+
+    def test_retired_consolidation_environment_cannot_enable_a_product(self) -> None:
+        values = {
+            "CONSOLIDATION_BREAKOUT_ENABLE": "true",
+            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE": "true",
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE": "true",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE": "false",
+            "CONSOLIDATION_DAILY_PRODUCT_ENABLE": "true",
+            "CONSOLIDATION_DAILY_SHADOW_MODE": "false",
+            "CONSOLIDATION_DAILY_DIGEST_ENABLE": "true",
+            "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE": "true",
+            "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID": "77",
+        }
+        with patch.dict(os.environ, values, clear=True), patch(
+            "config.settings.load_env_file", return_value=values,
+        ):
+            settings = Settings.load()
+        self.assertFalse(any(
+            "consolidation" in key for key in Settings.__dataclass_fields__
+        ))
+        pending = [settings.redacted_status()]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                self.assertFalse(any("consolidation" in key.lower() for key in value))
+                pending.extend(value.values())
+            elif isinstance(value, (list, tuple)):
+                pending.extend(value)
+        self.assertTrue(settings.pulse_radar_enable)
+        self.assertTrue(settings.flow_radar_enable)
 
     def test_new_pulse_switch_takes_precedence_over_legacy_alias(self) -> None:
         with patch.dict(
@@ -119,18 +147,7 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         self.assertTrue(status["FUNDING_ALERT_ENABLE"])
         self.assertTrue(status["FLOW_RADAR_ENABLE"])
         self.assertTrue(status["ANNOUNCEMENT_RISK_ENABLE"])
-        self.assertFalse(status["CONSOLIDATION_BREAKOUT_ENABLE"])
-        self.assertFalse(status["CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE"])
-        self.assertFalse(status["CONSOLIDATION_HOURLY_PROXIMITY_ENABLE"])
-        self.assertTrue(
-            status["CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE"]
-        )
-        self.assertFalse(status["CONSOLIDATION_DAILY_PRODUCT_ENABLE"])
-        self.assertTrue(status["CONSOLIDATION_DAILY_SHADOW_MODE"])
-        self.assertFalse(status["CONSOLIDATION_DAILY_DIGEST_ENABLE"])
-        self.assertFalse(
-            status["CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE"]
-        )
+        self.assertFalse(any(key.startswith("CONSOLIDATION_") for key in status))
 
     def test_admin_status_marks_invalid_value_without_exposing_it(self) -> None:
         invalid = "not-a-private-admin"
@@ -244,14 +261,6 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
             "FUNDING_ALERT_ENABLE",
             "FLOW_RADAR_ENABLE",
             "ANNOUNCEMENT_RISK_ENABLE",
-            "CONSOLIDATION_BREAKOUT_ENABLE",
-            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
-            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE",
-            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE",
-            "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
-            "CONSOLIDATION_DAILY_SHADOW_MODE",
-            "CONSOLIDATION_DAILY_DIGEST_ENABLE",
-            "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE",
         )
         for key in keys:
             with self.subTest(key=key):
@@ -270,6 +279,33 @@ class PrivateControlConfigManagerTests(unittest.TestCase):
         with self.assertRaises(ConfigManagerError):
             self.manager.set("PULSE_RADAR_ENABLE", "sometimes")
         self.assertEqual(path.read_bytes(), before)
+
+    def test_retired_consolidation_switches_are_rejected_without_writes(self) -> None:
+        path = self.root / "config" / ".env.oi"
+        original = "CONSOLIDATION_BREAKOUT_ENABLE=true\nPULSE_RADAR_ENABLE=true\n"
+        path.write_text(original, encoding="utf-8")
+        before = {p.relative_to(self.root): p.read_bytes()
+                  for p in self.root.rglob("*") if p.is_file()}
+        for key in (
+            "CONSOLIDATION_BREAKOUT_ENABLE",
+            "CONSOLIDATION_BREAKOUT_THREE_PUSH_ENABLE",
+            "CONSOLIDATION_HOURLY_PROXIMITY_ENABLE",
+            "CONSOLIDATION_HOURLY_PROXIMITY_SHADOW_MODE",
+            "CONSOLIDATION_DAILY_PRODUCT_ENABLE",
+            "CONSOLIDATION_DAILY_SHADOW_MODE",
+            "CONSOLIDATION_DAILY_DIGEST_ENABLE",
+            "CONSOLIDATION_DAILY_BOUNDARY_EVENTS_ENABLE",
+            "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID",
+        ):
+            with self.subTest(key=key), self.assertRaisesRegex(
+                ConfigManagerError, "not allowlisted",
+            ):
+                self.manager.set(key, "true")
+        self.assertEqual(
+            {p.relative_to(self.root): p.read_bytes()
+             for p in self.root.rglob("*") if p.is_file()}, before,
+        )
+        self.assertNotIn("CONSOLIDATION_BREAKOUT_ENABLE", self.manager.status())
 
     def test_daily_tuning_and_state_paths_are_not_runtime_allowlisted(self) -> None:
         for key in (

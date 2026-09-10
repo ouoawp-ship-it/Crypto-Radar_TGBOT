@@ -22,6 +22,7 @@ SIGNAL_STORE_SCHEMA_VERSION = 6
 ACTIVE_SIGNAL_MODULES = (
     "funding",
     "flow",
+    # Storage retention allowlist, not enabled radars: preserve retired history.
     "consolidation",
     "pulse",
     "launch",

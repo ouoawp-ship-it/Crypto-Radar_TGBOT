@@ -26,7 +26,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -35,20 +35,6 @@ from config import Settings
 from .database_backup import backup_databases
 from shared.binance_data import BinanceDataSource, UPSTREAM_SOURCE_METRICS
 from radars.capital_flow.radar import FlowRadarEngine
-from radars.consolidation_breakout.radar import ConsolidationBreakoutRadar
-from radars.consolidation_breakout.hourly_proximity import (
-    ConsolidationHourlyProximityRadar,
-)
-from radars.consolidation_breakout.daily_digest import (
-    CANDIDATE_GATE_VERSION,
-    ConsolidationDailyDigestAccumulator,
-    empty_daily_digest_state,
-    select_digest_signal_structures,
-)
-from radars.consolidation_breakout.chart import (
-    PNG_SIGNATURE as CONSOLIDATION_CHART_PNG_SIGNATURE,
-    render_consolidation_chart_png,
-)
 from radars.announcement_risk.radar import AnnouncementRiskRadar
 from .health import lightweight_freshness_checks, runtime_health_checks
 from shared.market_cockpit import persist_flow_market_rows, persist_market_batch
@@ -258,17 +244,6 @@ def telegram_topic_route_checks(
             if configured
             else f"{topic_name}专属话题未配置",
         ))
-    if bool(getattr(settings, "consolidation_breakout_enable", False)):
-        template_id = "TG_CONSOLIDATION_BREAKOUT"
-        configured = gateway.topic_route_configured(template_id)
-        topic_name = TOPIC_TEMPLATE_NAMES[template_id]
-        checks.append((
-            "telegram_topic_consolidation_breakout",
-            configured,
-            f"{topic_name}专属话题已配置"
-            if configured
-            else f"{topic_name}专属话题未配置",
-        ))
     return checks
 
 
@@ -288,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="status",
-        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "pulse-review-report", "telegram-test", "telegram-topic-setup", "telegram-topic-refresh", "private-control", "announcement-risk", "flow-radar", "funding-alert", "consolidation-breakout", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
+        choices=["about", "status", "doctor", "readiness", "stable-check", "database-backup", "signal-repair", "signal-effectiveness", "pulse-review-report", "telegram-test", "telegram-topic-setup", "telegram-topic-refresh", "private-control", "announcement-risk", "flow-radar", "funding-alert", "altcoin-anomaly", "pulse", "market-stream", "runtime-status", "radar-status", "cleanup", "once", "loop", "daemon", "live"],
         help="默认 status；doctor 检查环境；database-backup 创建并恢复验证 SQLite 备份；signal-effectiveness 回填信号结果",
     )
     parser.add_argument("--send", action="store_true", help="允许真实发送 Telegram；仍需要 --confirm-real-send")
@@ -320,12 +295,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-top", type=int, default=5, help="用于 pulse-review-report：本周涨幅榜数量，默认 5")
     parser.add_argument("--flow-scan-limit", type=int, default=None, help="临时覆盖五因子资金流雷达扫描上限")
     parser.add_argument("--funding-scan-limit", type=int, default=None, help="临时覆盖资金费率警报扫描上限")
-    parser.add_argument("--consolidation-scan-limit", type=int, default=None, help="临时覆盖盘整突破雷达每批扫描数量")
     parser.add_argument("--no-pulse", dest="no_launch", action="store_true", help="本轮不运行脉冲雷达")
     parser.add_argument("--no-announcements", action="store_true", help="本轮不运行公告风险雷达")
     parser.add_argument("--no-flow", action="store_true", help="本轮不运行五因子资金流雷达")
     parser.add_argument("--no-funding-alert", action="store_true", help="本轮不运行资金费率警报")
-    parser.add_argument("--no-consolidation-breakout", action="store_true", help="本轮不运行盘整突破雷达")
     parser.add_argument("--json", action="store_true", help="为支持的命令输出完整 JSON")
     parser.add_argument("--no-save", action="store_true", help="用于 stable-check：只查看，不写入验收历史")
     parser.add_argument(
@@ -367,11 +340,6 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     pulse_scan_limit = getattr(args, "pulse_scan_limit", None)
     flow_scan_limit = getattr(args, "flow_scan_limit", None)
     funding_scan_limit = getattr(args, "funding_scan_limit", None)
-    consolidation_scan_limit = getattr(
-        args,
-        "consolidation_scan_limit",
-        None,
-    )
     if radar_scan_limit is not None:
         updates["radar_scan_limit"] = max(0, int(radar_scan_limit))
     if pulse_scan_limit is not None:
@@ -381,11 +349,6 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
         updates["flow_scan_limit"] = max(0, int(flow_scan_limit))
     if funding_scan_limit is not None:
         updates["funding_alert_scan_limit"] = max(0, int(funding_scan_limit))
-    if consolidation_scan_limit is not None:
-        updates["consolidation_breakout_scan_limit"] = max(
-            1,
-            int(consolidation_scan_limit),
-        )
     if not updates:
         return settings
     return replace(settings, **updates)
@@ -414,12 +377,6 @@ def effective_radar_switches(
         "flow_radar": bool(
             settings.flow_radar_enable and not bool(args.no_flow)
         ),
-        "consolidation_breakout": bool(
-            settings.consolidation_breakout_enable
-            and not bool(
-                getattr(args, "no_consolidation_breakout", False)
-            )
-        ),
         "announcement_risk": bool(
             settings.announcement_risk_enable
             and not bool(args.no_announcements)
@@ -433,9 +390,6 @@ def radar_runtime_flags(switches: dict[str, bool]) -> dict[str, bool]:
         "no_summary": not switches["radar_summary"],
         "no_funding_alert": not switches["funding_alert"],
         "no_flow": not switches["flow_radar"],
-        "no_consolidation_breakout": not switches[
-            "consolidation_breakout"
-        ],
         "no_announcements": not switches["announcement_risk"],
     }
 
@@ -495,8 +449,6 @@ def state_paths(settings: Settings) -> list[Path]:
         settings.radar_state_path,
         settings.funding_snapshot_path,
         settings.funding_alert_state_path,
-        settings.consolidation_breakout_state_path,
-        settings.consolidation_hourly_proximity_state_path,
         settings.announcement_state_path,
         settings.data_dir / "simple_alert_state.json",
         settings.data_dir / "review_signals.json",
@@ -699,7 +651,6 @@ def run_private_control(settings: Settings, store: JsonStore) -> int:
                 "radar_summary": "TG_RADAR_SUMMARY",
                 "funding_alert": "TG_FUNDING_ALERT",
                 "flow_radar": "TG_FLOW_RADAR",
-                "consolidation_breakout": "TG_CONSOLIDATION_BREAKOUT",
                 "announcement_risk": "TG_ANNOUNCEMENT_ALERT",
             }
             return {
@@ -1295,689 +1246,6 @@ def push_flow_radar(settings: Settings, gateway: TelegramGateway, args: argparse
     return push.status, flow["diagnostics"]
 
 
-def run_consolidation_breakout(args: argparse.Namespace) -> int:
-    settings, _store, _engine, _gateway = make_runtime_for_args(args)
-    # An explicit one-shot command is an operator-requested scan.  The feature
-    # switch controls only automatic scheduling, so dry-run validation remains
-    # possible before enabling the daemon path.
-    if not settings.consolidation_breakout_enable:
-        settings = replace(settings, consolidation_breakout_enable=True)
-    store = JsonStore(settings.data_dir)
-    gateway = TelegramGateway(settings, store)
-    push_status, diagnostics = push_consolidation_breakout(
-        settings,
-        store,
-        gateway,
-        args,
-    )
-    print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
-    hourly_error = _consolidation_hourly_proximity_error_code(diagnostics)
-    return 1 if push_status in {"failed", "partial"} or hourly_error else 0
-
-
-def _consolidation_chart_photo(
-    event: Mapping[str, Any],
-    chart_payload: object,
-) -> tuple[bytes | None, str]:
-    caption = str(event.get("text") or "")
-    if len(plain_fallback(caption)) > 1024:
-        return None, "caption_too_long"
-    if not isinstance(chart_payload, Mapping):
-        return None, "payload_unavailable"
-    try:
-        photo = render_consolidation_chart_png(
-            event=event,
-            chart_payload=chart_payload,
-        )
-    except Exception:  # Presentation failure must not stop market scanning.
-        return None, "render_failed"
-    if not isinstance(photo, bytes) or not photo.startswith(
-        CONSOLIDATION_CHART_PNG_SIGNATURE
-    ):
-        return None, "invalid_png"
-    if len(photo) > 10 * 1024 * 1024:
-        return None, "photo_too_large"
-    return photo, "ready"
-
-
-def _process_consolidation_daily_digest(
-    settings: Settings,
-    store: JsonStore,
-    gateway: TelegramGateway,
-    args: argparse.Namespace,
-    result: Mapping[str, Any],
-) -> tuple[str | None, dict[str, object]]:
-    enabled = bool(
-        getattr(settings, "consolidation_daily_product_enable", False)
-        and getattr(settings, "consolidation_daily_digest_enable", False)
-    )
-    shadow_mode = bool(
-        getattr(settings, "consolidation_daily_shadow_mode", True)
-    )
-    diagnostics: dict[str, object] = {
-        "status": "disabled" if not enabled else "idle",
-        "enabled": enabled,
-        "shadow_mode": shadow_mode,
-        "batch_status": "unavailable",
-        "pending_count": 0,
-    }
-    if not enabled:
-        return None, diagnostics
-
-    now_ts = int(time.time())
-    state_path = Path(getattr(
-        settings,
-        "consolidation_daily_digest_state_path",
-        settings.data_dir / "consolidation_daily_digest_state.json",
-    ))
-    try:
-        state = store.load(state_path, empty_daily_digest_state())
-        raw_pending = (
-            state.get("pending_digests", [])
-            if isinstance(state, Mapping)
-            else []
-        )
-        legacy_pending_count = sum(
-            1
-            for item in raw_pending
-            if isinstance(item, Mapping)
-            and str(item.get("candidate_gate_version") or "")
-            != CANDIDATE_GATE_VERSION
-        ) if isinstance(raw_pending, list) else 0
-        accumulator = ConsolidationDailyDigestAccumulator(
-            state if isinstance(state, Mapping) else None,
-            max_items=int(getattr(
-                settings,
-                "consolidation_daily_digest_max_items",
-                20,
-            )),
-            max_retry_rounds=int(getattr(
-                settings,
-                "consolidation_daily_retry_rounds",
-                2,
-            )),
-            max_wait_sec=int(getattr(
-                settings,
-                "consolidation_daily_max_wait_sec",
-                3 * 3600,
-            )),
-            text_limit=max(1, min(
-                4096,
-                int(getattr(settings, "tg_push_split_limit", 3800)),
-            )),
-            migration_now_ts=now_ts,
-        )
-        diagnostics["candidate_gate_version"] = CANDIDATE_GATE_VERSION
-        diagnostics["invalidated_pending_count"] = legacy_pending_count
-        if legacy_pending_count:
-            diagnostics["invalidation_reason"] = (
-                "candidate_universe_tightened"
-            )
-            store.save(state_path, accumulator.snapshot())
-        raw_batch = result.get("daily_digest_batch")
-        batch = raw_batch if isinstance(raw_batch, Mapping) else {}
-        target_close_time = int(batch.get("target_close_time") or 0)
-        raw_expected = batch.get("expected_symbols")
-        expected_symbols = (
-            list(raw_expected)
-            if isinstance(raw_expected, (list, tuple, set))
-            else []
-        )
-        raw_observations = batch.get("observations")
-        observations = (
-            [item for item in raw_observations if isinstance(item, Mapping)]
-            if isinstance(raw_observations, (list, tuple))
-            else []
-        )
-        batch_ingested = False
-        if target_close_time > 0 and expected_symbols:
-            reconciliation = accumulator.reconcile_symbols(
-                expected_symbols,
-                now_ts=now_ts,
-            )
-            diagnostics["candidate_reconciliation"] = reconciliation
-            # Make a legacy-active migration durable before ingestion or any
-            # later Telegram request can fail the process.
-            store.save(state_path, accumulator.snapshot())
-            try:
-                accumulator.ingest_batch(
-                    target_close_time=target_close_time,
-                    expected_symbols=expected_symbols,
-                    observations=observations,
-                    now_ts=now_ts,
-                    round_completed=bool(batch.get("round_completed")),
-                    round_token=str(
-                        batch.get("round_token")
-                        or batch.get("rotation_round")
-                        or ""
-                    ),
-                )
-            except (TypeError, ValueError):
-                diagnostics["batch_status"] = "invalid"
-            else:
-                batch_ingested = True
-                diagnostics["batch_status"] = "ingested"
-                diagnostics["target_close_time"] = target_close_time
-
-        pending = accumulator.pending_digest(now_ts=now_ts)
-        if batch_ingested:
-            # Persist the complete accumulator and any newly frozen pending
-            # digest before a Telegram request can leave the process.
-            store.save(state_path, accumulator.snapshot())
-        current_snapshot = accumulator.snapshot()
-        pending_items = current_snapshot.get("pending_digests", [])
-        pending_items = pending_items if isinstance(pending_items, list) else []
-        diagnostics["pending_count"] = len(pending_items)
-        recent_snapshots = current_snapshot.get("recent_snapshots", [])
-        diagnostics["snapshot_count"] = len(
-            recent_snapshots if isinstance(recent_snapshots, list) else []
-        )
-
-        if (
-            not batch_ingested
-            and legacy_pending_count > 0
-            and not pending_items
-        ):
-            diagnostics["status"] = "candidate_universe_tightened"
-            return None, diagnostics
-
-        if shadow_mode:
-            diagnostics["status"] = (
-                "shadow_accumulating" if batch_ingested else "shadow_idle"
-            )
-            return None, diagnostics
-        if pending is None:
-            if pending_items:
-                delivery = pending_items[-1].get("delivery")
-                delivery = delivery if isinstance(delivery, Mapping) else {}
-                diagnostics["status"] = "retry_backoff"
-                diagnostics["next_attempt_at"] = int(
-                    delivery.get("next_attempt_at") or 0
-                )
-                return None, diagnostics
-            diagnostics["status"] = (
-                "accumulating" if batch_ingested else "batch_unavailable"
-            )
-            return None, diagnostics
-
-        # A pending digest loaded from a previous run is already durable, but
-        # save it once more so every delivery path has the same ordering rule.
-        store.save(state_path, accumulator.snapshot())
-        digest_id = str(pending.get("digest_id") or "")
-        signal_records: list[dict[str, Any]] = []
-        for item in select_digest_signal_structures(
-            pending,
-            max_items=int(getattr(
-                settings,
-                "consolidation_daily_digest_max_items",
-                20,
-            )),
-        ):
-            signal_records.append({
-                **dict(item),
-                "event": "daily_consolidation_digest",
-                "event_time": int(pending.get("target_close_time") or 0),
-                "timeframe": "1d",
-            })
-        push = gateway.send(
-            str(pending.get("text") or ""),
-            str(result.get("template_id") or "TG_CONSOLIDATION_BREAKOUT"),
-            str(pending.get("dedup_key") or digest_id),
-            send=args.send,
-            confirm_real_send=args.confirm_real_send,
-            cooldown_sec=7 * 86400,
-            parse_mode="HTML",
-            signal_records=signal_records or None,
-            photo=None,
-            enrich_market_context=False,
-        )
-        accepted = accumulator.mark_delivery(
-            digest_id,
-            status=push.status,
-            reason=push.reason,
-            now_ts=now_ts,
-        )
-        post_delivery_snapshot = accumulator.snapshot()
-        store.save(state_path, post_delivery_snapshot)
-        post_delivery_archives = post_delivery_snapshot.get(
-            "recent_snapshots",
-            [],
-        )
-        diagnostics.update({
-            "status": "delivered" if accepted else "pending_retained",
-            "pending_count": len(
-                post_delivery_snapshot.get("pending_digests", [])
-            ),
-            "snapshot_count": len(
-                post_delivery_archives
-                if isinstance(post_delivery_archives, list)
-                else []
-            ),
-            "delivery": {
-                "status": push.status,
-                "reason": push.reason,
-                "accepted": accepted,
-            },
-        })
-        return push.status, diagnostics
-    except Exception as exc:
-        diagnostics.update({
-            "status": "failed",
-            "error_code": type(exc).__name__,
-        })
-        return "failed", diagnostics
-
-
-def _consolidation_event_key(
-    event: Mapping[str, Any],
-) -> tuple[str, int] | None:
-    symbol = str(event.get("symbol") or "").strip().upper()
-    try:
-        close_time = int(
-            event.get("close_time") or event.get("event_time") or 0
-        )
-    except (TypeError, ValueError, OverflowError):
-        close_time = 0
-    if not symbol or close_time <= 0:
-        return None
-    return symbol, close_time
-
-
-def _consolidation_hourly_proximity_error_code(
-    diagnostics: Mapping[str, object],
-) -> str:
-    raw = diagnostics.get("hourly_proximity")
-    hourly = raw if isinstance(raw, Mapping) else {}
-    status = str(hourly.get("status") or "").strip().lower()
-    if status not in {
-        "scan_failed",
-        "shadow_commit_failed",
-        "commit_failed",
-    }:
-        return ""
-    return f"hourly_proximity_{status}"
-
-
-def _process_consolidation_hourly_proximity(
-    settings: Settings,
-    store: JsonStore,
-    gateway: TelegramGateway,
-    args: argparse.Namespace,
-    base_events: object,
-    base_delivery_pending: bool,
-    base_events_withheld: bool,
-) -> tuple[str | None, dict[str, object]]:
-    enabled = bool(getattr(
-        settings,
-        "consolidation_hourly_proximity_enable",
-        False,
-    ))
-    shadow_mode = bool(getattr(
-        settings,
-        "consolidation_hourly_proximity_shadow_mode",
-        True,
-    ))
-    diagnostics: dict[str, object] = {
-        "status": "disabled" if not enabled else "idle",
-        "enabled": enabled,
-        "shadow_mode": shadow_mode,
-        "events": 0,
-        "accepted": 0,
-        "suppressed_by_structure": 0,
-        "pushes": [],
-    }
-    if not enabled:
-        return None, diagnostics
-
-    try:
-        radar = ConsolidationHourlyProximityRadar(settings, store)
-        with BinanceDataSource(
-            settings,
-            kline_budget=int(getattr(
-                settings,
-                "consolidation_hourly_proximity_kline_budget",
-                60,
-            )),
-        ) as source:
-            result = radar.build(source)
-    except Exception as exc:
-        diagnostics.update({
-            "status": "scan_failed",
-            "error_code": type(exc).__name__,
-        })
-        return None, diagnostics
-
-    raw_scan_diagnostics = result.get("diagnostics")
-    if isinstance(raw_scan_diagnostics, Mapping):
-        diagnostics["scan"] = dict(raw_scan_diagnostics)
-    raw_events = result.get("events")
-    events = (
-        [event for event in raw_events if isinstance(event, Mapping)]
-        if isinstance(raw_events, (list, tuple))
-        else []
-    )
-    diagnostics["events"] = len(events)
-
-    if shadow_mode:
-        accepted_event_ids = {
-            str(event.get("event_id") or "")
-            for event in events
-            if str(event.get("event_id") or "")
-        }
-        try:
-            committed = radar.commit(result, accepted_event_ids)
-        except Exception as exc:
-            diagnostics.update({
-                "status": "shadow_commit_failed",
-                "error_code": type(exc).__name__,
-                "accepted": len(accepted_event_ids),
-            })
-            return "failed", diagnostics
-        else:
-            diagnostics.update({
-                "status": (
-                    "shadow_observed" if events else "shadow_idle"
-                ),
-                "accepted": len(accepted_event_ids),
-                "state_updates_committed": committed,
-            })
-        return None, diagnostics
-
-    base_event_list = [
-        event
-        for event in (
-            base_events if isinstance(base_events, (list, tuple)) else []
-        )
-        if isinstance(event, Mapping)
-    ]
-    base_event_keys = {
-        key
-        for event in base_event_list
-        for key in [_consolidation_event_key(event)]
-        if key is not None
-    }
-    configured_base_max = max(0, int(getattr(
-        settings,
-        "consolidation_breakout_max_signals_per_scan",
-        8,
-    )))
-    base_capacity_saturated = bool(base_events_withheld) or (
-        configured_base_max > 0
-        and len(base_event_list) >= configured_base_max
-    )
-    diagnostics["base_events_withheld"] = bool(base_events_withheld)
-    diagnostics["base_capacity_saturated"] = base_capacity_saturated
-    raw_chart_payloads = result.get("chart_payloads")
-    chart_payloads = (
-        raw_chart_payloads
-        if isinstance(raw_chart_payloads, Mapping)
-        else {}
-    )
-    accepted_event_ids: set[str] = set()
-    push_results: list[dict[str, object]] = []
-    for index, event in enumerate(events, start=1):
-        event_id = str(event.get("event_id") or "")
-        event_key = _consolidation_event_key(event)
-        if base_delivery_pending:
-            push_results.append({
-                "event_id": event_id,
-                "status": "deferred",
-                "reason": "base_structure_delivery_pending",
-                "chart_status": "not_rendered",
-            })
-            continue
-        if base_capacity_saturated:
-            push_results.append({
-                "event_id": event_id,
-                "status": "deferred",
-                "reason": "base_structure_capacity_saturated",
-                "chart_status": "not_rendered",
-            })
-            continue
-        if event_key is not None and event_key in base_event_keys:
-            if event_id:
-                accepted_event_ids.add(event_id)
-            push_results.append({
-                "event_id": event_id,
-                "status": "suppressed",
-                "reason": "base_structure_same_close",
-                "chart_status": "not_rendered",
-            })
-            continue
-
-        photo, chart_status = _consolidation_chart_photo(
-            event,
-            chart_payloads.get(event_id),
-        )
-        try:
-            push = gateway.send(
-                str(event.get("text") or ""),
-                str(
-                    result.get("template_id")
-                    or "TG_CONSOLIDATION_BREAKOUT"
-                ),
-                str(event.get("dedup_key") or event_id),
-                send=args.send,
-                confirm_real_send=args.confirm_real_send,
-                cooldown_sec=7 * 86400,
-                parse_mode="HTML",
-                signal_records=[event],
-                photo=photo,
-                enrich_market_context=False,
-            )
-        except Exception as exc:
-            push_results.append({
-                "event_id": event_id,
-                "status": "failed",
-                "reason": type(exc).__name__,
-                "chart_status": chart_status,
-            })
-            continue
-        print(format_push_result_cn(
-            "1H 箱体临界预警推送",
-            push.status,
-            push.reason,
-            index=index,
-        ))
-        push_results.append({
-            "event_id": event_id,
-            "status": push.status,
-            "reason": push.reason,
-            "chart_status": chart_status,
-        })
-        if event_id and (
-            push.status == "sent"
-            or (
-                push.status == "skipped"
-                and push.reason in {"dedup_cooldown", "exact_duplicate"}
-            )
-        ):
-            accepted_event_ids.add(event_id)
-
-    commit_failed = False
-    try:
-        committed = radar.commit(result, accepted_event_ids)
-    except Exception as exc:
-        commit_failed = True
-        diagnostics.update({
-            "status": "commit_failed",
-            "error_code": type(exc).__name__,
-        })
-    else:
-        diagnostics["state_updates_committed"] = committed
-
-    delivery_statuses = {
-        str(item.get("status") or "")
-        for item in push_results
-        if item.get("status") != "suppressed"
-    }
-    if delivery_statuses & {"failed", "partial"}:
-        delivery_status = "failed"
-    elif "blocked" in delivery_statuses:
-        delivery_status = "blocked"
-    elif "sent" in delivery_statuses:
-        delivery_status = "sent"
-    elif "dry_run" in delivery_statuses:
-        delivery_status = "dry_run"
-    else:
-        delivery_status = "skipped"
-    diagnostics.update({
-        "status": (
-            diagnostics.get("status")
-            if diagnostics.get("status") == "commit_failed"
-            else "live"
-        ),
-        "delivery_status": delivery_status,
-        "accepted": len(accepted_event_ids),
-        "suppressed_by_structure": sum(
-            item.get("status") == "suppressed" for item in push_results
-        ),
-        "deferred_by_structure_capacity": sum(
-            item.get("reason") == "base_structure_capacity_saturated"
-            for item in push_results
-        ),
-        "deferred_by_structure_delivery": sum(
-            item.get("reason") == "base_structure_delivery_pending"
-            for item in push_results
-        ),
-        "charts_ready": sum(
-            item.get("chart_status") == "ready" for item in push_results
-        ),
-        "charts_delivered": sum(
-            item.get("chart_status") == "ready"
-            and item.get("status") == "sent"
-            for item in push_results
-        ),
-        "charts_text_fallback": sum(
-            item.get("status") not in {"suppressed", "deferred"}
-            and item.get("chart_status") != "ready"
-            for item in push_results
-        ),
-        "pushes": push_results,
-    })
-    return "failed" if commit_failed else delivery_status, diagnostics
-
-
-def push_consolidation_breakout(
-    settings: Settings,
-    store: JsonStore,
-    gateway: TelegramGateway,
-    args: argparse.Namespace,
-) -> tuple[str, dict[str, object]]:
-    radar = ConsolidationBreakoutRadar(settings, store)
-    with BinanceDataSource(settings) as source:
-        result = radar.build(source)
-
-    accepted_event_ids: set[str] = set()
-    push_results: list[dict[str, object]] = []
-    raw_chart_payloads = result.get("chart_payloads")
-    chart_payloads = (
-        raw_chart_payloads if isinstance(raw_chart_payloads, Mapping) else {}
-    )
-    for index, event in enumerate(result.get("events") or [], start=1):
-        event_id = str(event.get("event_id") or "")
-        photo, chart_status = _consolidation_chart_photo(
-            event,
-            chart_payloads.get(event_id),
-        )
-        push = gateway.send(
-            str(event.get("text") or ""),
-            str(result.get("template_id") or "TG_CONSOLIDATION_BREAKOUT"),
-            str(event.get("dedup_key") or event_id),
-            send=args.send,
-            confirm_real_send=args.confirm_real_send,
-            cooldown_sec=7 * 86400,
-            parse_mode="HTML",
-            signal_records=[event],
-            photo=photo,
-            enrich_market_context=False,
-        )
-        print(format_push_result_cn(
-            "盘整突破雷达推送",
-            push.status,
-            push.reason,
-            index=index,
-        ))
-        push_results.append({
-            "event_id": event_id,
-            "status": push.status,
-            "reason": push.reason,
-            "chart_status": chart_status,
-        })
-        if push.status == "sent" or (
-            push.status == "skipped" and push.reason == "dedup_cooldown"
-        ):
-            accepted_event_ids.add(event_id)
-
-    committed = radar.commit(result, accepted_event_ids)
-    daily_digest_status, daily_digest_diagnostics = (
-        _process_consolidation_daily_digest(
-            settings,
-            store,
-            gateway,
-            args,
-            result,
-        )
-    )
-    raw_base_diagnostics = result.get("diagnostics")
-    raw_withheld_count = (
-        raw_base_diagnostics.get("withheld_event_count", 0)
-        if isinstance(raw_base_diagnostics, Mapping)
-        else 0
-    )
-    try:
-        base_events_withheld = int(raw_withheld_count) > 0
-    except (TypeError, ValueError, OverflowError):
-        base_events_withheld = False
-    proximity_status, proximity_diagnostics = (
-        _process_consolidation_hourly_proximity(
-            settings,
-            store,
-            gateway,
-            args,
-            result.get("events") or [],
-            len(accepted_event_ids) < len(result.get("events") or []),
-            base_events_withheld,
-        )
-    )
-    diagnostics = dict(result.get("diagnostics") or {})
-    diagnostics["daily_digest"] = daily_digest_diagnostics
-    diagnostics["hourly_proximity"] = proximity_diagnostics
-    diagnostics["delivery"] = {
-        "events": len(result.get("events") or []),
-        "accepted": len(accepted_event_ids),
-        "state_updates_committed": committed,
-        "charts_ready": sum(
-            item.get("chart_status") == "ready" for item in push_results
-        ),
-        "charts_delivered": sum(
-            item.get("chart_status") == "ready"
-            and item.get("status") == "sent"
-            for item in push_results
-        ),
-        "charts_text_fallback": sum(
-            item.get("chart_status") != "ready" for item in push_results
-        ),
-        "pushes": push_results,
-    }
-    statuses = {str(item.get("status") or "") for item in push_results}
-    if daily_digest_status:
-        statuses.add(daily_digest_status)
-    if proximity_status:
-        statuses.add(proximity_status)
-    if statuses & {"failed", "partial"}:
-        overall = "failed"
-    elif "blocked" in statuses:
-        overall = "blocked"
-    elif "sent" in statuses:
-        overall = "sent"
-    elif "dry_run" in statuses:
-        overall = "dry_run"
-    else:
-        overall = "skipped"
-    return overall, diagnostics
-
-
 def run_funding_alert(args: argparse.Namespace) -> int:
     settings, store, _engine, gateway = make_runtime_for_args(args)
     push_status, diagnostics = push_funding_alert(settings, store, gateway, args)
@@ -2174,10 +1442,6 @@ def run_once(
     refresh_effectiveness: bool = True,
 ) -> int:
     settings, store, engine, gateway = make_runtime_for_args(args)
-    consolidation_enabled = bool(
-        settings.consolidation_breakout_enable
-        and not bool(getattr(args, "no_consolidation_breakout", False))
-    )
     mode = command_mode(args)
     runtime_task = (
         "loop" if mode in {"loop", "daemon", "live"} else "once"
@@ -2195,14 +1459,10 @@ def run_once(
         no_funding_alert=bool(
             getattr(args, "no_funding_alert", False)
         ),
-        no_consolidation_breakout=not consolidation_enabled,
         radar_scan_limit=settings.radar_scan_limit,
         pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
         pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
-        consolidation_breakout_scan_limit=(
-            settings.consolidation_breakout_scan_limit
-        ),
     )
     result = engine.run_once(
         include_announcements=not args.no_announcements,
@@ -2255,18 +1515,6 @@ def run_once(
     if not getattr(args, "no_funding_alert", False):
         funding_alert_push_status, funding_diag = push_funding_alert(settings, store, gateway, args)
         diagnostics["funding_alert"] = funding_diag
-    consolidation_push_status = "skipped"
-    consolidation_error_code = ""
-    if consolidation_enabled:
-        consolidation_push_status, consolidation_diag = (
-            push_consolidation_breakout(settings, store, gateway, args)
-        )
-        diagnostics["consolidation_breakout"] = consolidation_diag
-        consolidation_error_code = (
-            _consolidation_hourly_proximity_error_code(
-                consolidation_diag
-            )
-        )
     if refresh_effectiveness:
         try:
             diagnostics["signal_effectiveness"] = refresh_signal_effectiveness(settings)
@@ -2290,9 +1538,6 @@ def run_once(
         "pulse_divergence_scan_limit": settings.pulse_divergence_scan_limit,
         "flow_scan_limit": settings.flow_scan_limit,
         "funding_alert_scan_limit": settings.funding_alert_scan_limit,
-        "consolidation_breakout_scan_limit": (
-            settings.consolidation_breakout_scan_limit
-        ),
         "last_error": "",
         "announcement_evidence": result.get("announcement_evidence", {}),
         "announcement_risk_push": announcement_push_status,
@@ -2322,27 +1567,14 @@ def run_once(
         )
         runtime_details["funding_alert_cycle_status"] = "ok"
         runtime_details["funding_alert_error_code"] = ""
-    if consolidation_enabled:
-        runtime_details["consolidation_breakout_push"] = (
-            consolidation_push_status
-        )
-        runtime_details["consolidation_breakout_cycle_status"] = (
-            "failed" if consolidation_error_code else "ok"
-        )
-        runtime_details["consolidation_breakout_error_code"] = (
-            consolidation_error_code
-        )
-    runtime_status = "running" if runtime_task == "loop" else "completed"
-    if consolidation_error_code:
-        runtime_status = "consolidation_breakout_failed"
     write_runtime_status(
         settings,
         store,
         mode,
-        runtime_status,
+        "running" if runtime_task == "loop" else "completed",
         **runtime_details,
     )
-    return 1 if consolidation_error_code else 0
+    return 0
 
 
 def run_loop(args: argparse.Namespace) -> int:
@@ -2375,11 +1607,6 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=settings.flow_interval_sec,
         delay_sec=settings.flow_close_delay_sec,
     )
-    next_consolidation_breakout = next_closed_window_epoch(
-        time.time(),
-        interval_sec=settings.consolidation_breakout_interval_sec,
-        delay_sec=settings.consolidation_breakout_close_delay_sec,
-    )
     next_funding_alert = time.time()
     heartbeat_interval_sec = max(
         5,
@@ -2396,19 +1623,12 @@ def run_loop(args: argparse.Namespace) -> int:
         interval_sec=summary_interval,
         pulse_interval_sec=15 * 60,
         flow_interval_sec=max(60, settings.flow_interval_sec),
-        consolidation_breakout_interval_sec=max(
-            60,
-            settings.consolidation_breakout_interval_sec,
-        ),
         funding_alert_interval_sec=max(60, settings.funding_alert_interval_sec),
         summary_close_delay_sec=settings.radar_summary_close_delay_sec,
         flow_close_delay_sec=settings.flow_close_delay_sec,
         next_summary_at=timestamp_from_epoch(next_summary),
         next_announcement_at=timestamp_from_epoch(next_announcement),
         next_flow_at=timestamp_from_epoch(next_flow),
-        next_consolidation_breakout_at=timestamp_from_epoch(
-            next_consolidation_breakout
-        ),
         next_funding_alert_at=timestamp_from_epoch(next_funding_alert),
         next_launch_at="",
         next_market_snapshot_at="",
@@ -2417,9 +1637,6 @@ def run_loop(args: argparse.Namespace) -> int:
         pulse_simple_scan_limit=settings.pulse_simple_scan_limit,
         pulse_divergence_scan_limit=settings.pulse_divergence_scan_limit,
         flow_scan_limit=settings.flow_scan_limit,
-        consolidation_breakout_scan_limit=(
-            settings.consolidation_breakout_scan_limit
-        ),
         funding_alert_scan_limit=settings.funding_alert_scan_limit,
         last_error="",
     )
@@ -2661,105 +1878,6 @@ def run_loop(args: argparse.Namespace) -> int:
                 flow_cycle_status="ok" if flow_ok else "failed",
                 flow_error_code=flow_error_code,
                 diagnostics={"flow": flow_diag},
-                settings_reload_error=settings_reload_error,
-                **runtime_flags,
-                last_error="",
-            )
-        if (
-            not switches["consolidation_breakout"]
-            and now >= next_consolidation_breakout
-        ):
-            next_consolidation_breakout = next_closed_window_epoch(
-                time.time(),
-                interval_sec=settings.consolidation_breakout_interval_sec,
-                delay_sec=settings.consolidation_breakout_close_delay_sec,
-            )
-            write_runtime_status(
-                settings,
-                store,
-                mode,
-                "running",
-                task="loop",
-                real_send=bool(args.send and args.confirm_real_send),
-                next_consolidation_breakout_at=timestamp_from_epoch(
-                    next_consolidation_breakout
-                ),
-                settings_reload_error=settings_reload_error,
-                **runtime_flags,
-                last_error="",
-            )
-        if (
-            switches["consolidation_breakout"]
-            and now >= next_consolidation_breakout
-        ):
-            consolidation_ok = True
-            consolidation_error_code = ""
-            consolidation_diag: dict[str, object] = {}
-            consolidation_push_status = "skipped"
-            try:
-                store, _engine, gateway = make_runtime_from_settings(settings)
-                (
-                    consolidation_push_status,
-                    consolidation_diag,
-                ) = push_consolidation_breakout(
-                    settings,
-                    store,
-                    gateway,
-                    args,
-                )
-                hourly_error = (
-                    _consolidation_hourly_proximity_error_code(
-                        consolidation_diag
-                    )
-                )
-                if hourly_error:
-                    consolidation_ok = False
-                    consolidation_error_code = hourly_error
-                print(json.dumps(
-                    {"consolidation_breakout": consolidation_diag},
-                    ensure_ascii=False,
-                    indent=2,
-                ))
-            except Exception as exc:
-                consolidation_ok = False
-                consolidation_error_code = type(exc).__name__
-                print(
-                    "[loop] consolidation breakout failed: "
-                    f"{consolidation_error_code}",
-                    file=sys.stderr,
-                )
-            next_consolidation_breakout = next_closed_window_epoch(
-                time.time(),
-                interval_sec=settings.consolidation_breakout_interval_sec,
-                delay_sec=settings.consolidation_breakout_close_delay_sec,
-            )
-            write_runtime_status(
-                settings,
-                store,
-                mode,
-                (
-                    "running"
-                    if consolidation_ok
-                    else "consolidation_breakout_failed"
-                ),
-                task="loop",
-                real_send=bool(args.send and args.confirm_real_send),
-                last_consolidation_breakout_at=timestamp_from_epoch(
-                    time.time()
-                ),
-                next_consolidation_breakout_at=timestamp_from_epoch(
-                    next_consolidation_breakout
-                ),
-                consolidation_breakout_push=consolidation_push_status,
-                consolidation_breakout_cycle_status=(
-                    "ok" if consolidation_ok else "failed"
-                ),
-                consolidation_breakout_error_code=(
-                    consolidation_error_code
-                ),
-                diagnostics={
-                    "consolidation_breakout": consolidation_diag
-                },
                 settings_reload_error=settings_reload_error,
                 **runtime_flags,
                 last_error="",
@@ -3032,12 +2150,6 @@ def main(argv: list[str] | None = None) -> int:
             if gate != 0:
                 return gate
         return run_funding_alert(args)
-    if args.command == "consolidation-breakout":
-        if args.send and args.confirm_real_send:
-            gate = require_real_send_gate(settings, store, args)
-            if gate != 0:
-                return gate
-        return run_consolidation_breakout(args)
     if args.command == "runtime-status":
         print_runtime_status(settings, store)
         return 0

@@ -59,7 +59,6 @@ class TelegramGatewayTests(unittest.TestCase):
             "TG_FUNDING_ALERT",
             "TG_LAUNCH_ALERT",
             "TG_FLOW_RADAR",
-            "TG_CONSOLIDATION_BREAKOUT",
         ):
             with self.subTest(template_id=template_id):
                 self.assertEqual(
@@ -331,124 +330,55 @@ class TelegramGatewayTests(unittest.TestCase):
                 ["11", "12", "14", "15", "16", "10"],
             )
 
-    def test_consolidation_topic_rejects_invalid_ids_before_http(self) -> None:
-        for topic_id in ("invalid", "0", "-9"):
-            with self.subTest(topic_id=topic_id), TemporaryDirectory() as tmp:
-                settings = Settings(
-                    data_dir=Path(tmp),
-                    tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                    tg_chat_id="-1001234567890",
-                    tg_consolidation_breakout_topic_id=topic_id,
-                    tg_default_cooldown_sec=0,
-                )
-                gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
 
-                with patch("shared.telegram.requests.post") as post_mock:
+
+
+    def test_retired_consolidation_cannot_send_or_load_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            settings = Settings(
+                data_dir=Path(tmp),
+                tg_topic_id="77",
+                tg_topic_routes_path=Path(tmp) / "routes.json",
+                tg_bot_token="test-token",
+                tg_chat_id="test-chat",
+            )
+            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
+            for send, confirm in ((False, False), (True, False), (True, True)):
+                with (
+                    self.subTest(send=send, confirm=confirm),
+                    patch.object(gateway.store, "load") as load,
+                    patch.object(gateway.store, "save") as save,
+                    patch("shared.telegram.enrich_telegram_with_market_context") as enrich,
+                    patch("shared.telegram.requests.post") as post,
+                ):
                     result = gateway.send(
-                        "BTCUSDT breakout",
-                        "TG_CONSOLIDATION_BREAKOUT",
-                        f"consolidation:{topic_id}",
-                        send=True,
-                        confirm_real_send=True,
-                        cooldown_sec=0,
-                        enrich_market_context=False,
+                        "BTCUSDT retired signal", "TG_CONSOLIDATION_BREAKOUT", "retired:key",
+                        send=send, confirm_real_send=confirm, parse_mode="HTML",
+                        signal_records=[{"symbol": "BTCUSDT"}],
                     )
-                    setup = gateway.setup_topic(
-                        "TG_CONSOLIDATION_BREAKOUT",
-                        send=True,
-                        confirm_real_send=True,
-                    )
-                    refresh = gateway.refresh_topic_intro(
-                        "TG_CONSOLIDATION_BREAKOUT",
-                        send=True,
-                        confirm_real_send=True,
-                    )
+                    self.assertEqual(result.status, "blocked")
+                    self.assertEqual(result.reason, "telegram_template_retired")
+                    self.assertFalse(result.sent)
+                    self.assertFalse(gateway.topic_route_configured("TG_CONSOLIDATION_BREAKOUT"))
+                    load.assert_not_called()
+                    save.assert_not_called()
+                    enrich.assert_not_called()
+                    post.assert_not_called()
 
-                self.assertEqual(result.status, "blocked")
-                self.assertEqual(result.reason, "telegram_topic_invalid")
-                self.assertEqual(setup, {
-                    "status": "blocked",
-                    "reason": "telegram_topic_invalid",
-                })
-                self.assertEqual(refresh, {
-                    "status": "blocked",
-                    "reason": "telegram_topic_invalid",
-                })
-                self.assertFalse(
-                    gateway.topic_route_configured(
-                        "TG_CONSOLIDATION_BREAKOUT"
-                    )
-                )
-                post_mock.assert_not_called()
-
-    def test_consolidation_topic_is_forced_into_its_thread(self) -> None:
+    def test_retired_topic_cannot_be_created_or_refreshed(self) -> None:
         with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                tg_chat_id="@crypto_radar_test",
-                tg_consolidation_breakout_topic_id="77",
-                tg_use_topic=False,
-                tg_default_cooldown_sec=0,
-            )
+            settings = Settings(data_dir=Path(tmp), tg_bot_token="test-token", tg_chat_id="test-chat")
             gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
-            session = FakeTelegramSession()
-
-            with patch(
-                "shared.telegram.requests.post",
-                side_effect=session.post,
-            ):
-                result = gateway.send(
-                    "BTCUSDT breakout",
-                    "TG_CONSOLIDATION_BREAKOUT",
-                    "consolidation:valid-topic",
-                    send=True,
-                    confirm_real_send=True,
-                    cooldown_sec=0,
-                    enrich_market_context=False,
-                )
-
-            self.assertTrue(result.sent)
-            self.assertTrue(
-                gateway.topic_route_configured(
-                    "TG_CONSOLIDATION_BREAKOUT"
-                )
-            )
-            self.assertEqual(
-                session.calls[0]["json"]["message_thread_id"],
-                77,
-            )
-
-    def test_consolidation_topic_intro_is_forced_into_its_thread(self) -> None:
-        with TemporaryDirectory() as tmp:
-            settings = Settings(
-                data_dir=Path(tmp),
-                tg_topic_routes_path=Path(tmp) / "topic_routes.json",
-                tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                tg_chat_id="@crypto_radar_test",
-                tg_consolidation_breakout_topic_id="77",
-                tg_use_topic=False,
-                tg_topic_intro_pin=False,
-            )
-            gateway = TelegramGateway(settings, JsonStore(Path(tmp)))
-            session = FakeTelegramSession()
-
-            with patch(
-                "shared.telegram.requests.post",
-                side_effect=session.post,
-            ):
-                result = gateway.setup_topic(
-                    "TG_CONSOLIDATION_BREAKOUT",
-                    send=True,
-                    confirm_real_send=True,
-                )
-
-            self.assertEqual(result["status"], "ok")
-            self.assertTrue(str(session.calls[0]["url"]).endswith("/sendMessage"))
-            self.assertEqual(
-                session.calls[0]["json"]["message_thread_id"],
-                77,
-            )
+            with patch("shared.telegram.requests.post") as post, patch.object(gateway.store, "load") as load:
+                for operation in (gateway.setup_topic, gateway.refresh_topic_intro):
+                    result = operation("TG_CONSOLIDATION_BREAKOUT", send=True, confirm_real_send=True)
+                    self.assertEqual(result, {"status": "blocked", "reason": "telegram_topic_template_invalid"})
+                self.assertNotIn("TG_CONSOLIDATION_BREAKOUT", TOPIC_TEMPLATE_NAMES)
+                self.assertNotIn("TG_CONSOLIDATION_BREAKOUT", TOPIC_INTRO_VERSIONS)
+                self.assertNotIn("TG_CONSOLIDATION_BREAKOUT", PRODUCTION_TOPIC_TEMPLATE_IDS)
+                self.assertEqual(topic_intro_message("TG_CONSOLIDATION_BREAKOUT", settings), "")
+                load.assert_not_called()
+                post.assert_not_called()
 
     def test_manual_topic_setup_creates_and_reuses_saved_route(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1421,53 +1351,6 @@ class TelegramGatewayTests(unittest.TestCase):
                 TOPIC_INTRO_VERSIONS["TG_LAUNCH_ALERT"],
             )
 
-    def test_consolidation_topic_intro_explains_three_push_divergence(self) -> None:
-        with TemporaryDirectory() as tmp:
-            intro = topic_intro_message(
-                "TG_CONSOLIDATION_BREAKOUT",
-                Settings(
-                    data_dir=Path(tmp),
-                    consolidation_breakout_three_push_enable=True,
-                ),
-            )
-
-            for phrase in (
-                "三推顶 / 三推底形成中",
-                "三个独立的同周期MACD局部峰谷",
-                "形成后12根内",
-                "价格与MACD枢轴都由左右各2根闭合K线确认",
-                "两段价格推进各需至少0.10 ATR",
-                "两段MACD各需至少弱化5%",
-                "两项都不满足为“弱”并仅更新内部状态，不推送",
-                "自适应1D产品另用短期20/30/40/50",
-                "长期180/240/300/360/420/500根锚点",
-                "闭合4H K线只负责越界早期预警，不等同于1D确认",
-                "不是08:00定点推送",
-                "箱体与三推卡片均取消未经回测校准的/100评分",
-                "稳定币、传统金融映射和未知资产不会进入候选池",
-                "不会因短/中/长期三个箱体重复",
-                "三推背离独立开关当前已启用",
-                "随信号K线图",
-                "自适应1D图最多保留620根",
-                "1D STRUCT / 4H TRIGGER",
-                "价格P1/P2/P3、三个独立MACD枢轴",
-                "缺少跨周期图表上下文时只按受限预算补取1D历史",
-                "不参与信号判断、质量标签、排序或去重",
-                "新版本默认产品关闭且影子模式开启",
-                "1H箱体临界预警",
-                "以15m优先、1H兜底",
-                "临近不是突破确认",
-                "退回边界至少0.60 ATR并连续保持两根1H",
-                "4H / 1D / 1W共振只比较同方向冻结边界",
-                "1H STRUCT / 15m TRIGGER",
-                "1H临界预警：关；影子模式：开",
-            ):
-                self.assertIn(phrase, intro)
-            self.assertEqual(
-                topic_intro_version("TG_CONSOLIDATION_BREAKOUT"),
-                "2026-09-01-consolidation-breakout-v8",
-            )
-            self.assertLessEqual(len(plain_fallback(intro)), 4096)
 
     def test_remaining_alert_topic_intros_hold_static_guidance(self) -> None:
         with TemporaryDirectory() as tmp:
