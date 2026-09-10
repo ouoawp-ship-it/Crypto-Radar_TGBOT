@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr
+import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -8,11 +10,13 @@ from unittest.mock import Mock, patch
 
 from config import Settings
 from runtime.cli import (
+    build_parser,
     effective_radar_switches,
     last_known_settings_reader,
     radar_runtime_flags,
     refresh_shared_market_snapshot,
     reload_loop_settings,
+    state_paths,
 )
 from runtime.diagnostics import build_market_radar_runtime_status
 from shared.storage import JsonStore
@@ -24,22 +28,18 @@ def args(**updates: bool) -> argparse.Namespace:
         "no_announcements": False,
         "no_flow": False,
         "no_funding_alert": False,
-        "no_consolidation_breakout": False,
     }
     values.update(updates)
     return argparse.Namespace(**values)
 
 
 class RadarSwitchTests(unittest.TestCase):
-    def test_existing_switches_stay_enabled_and_new_radar_is_opt_in(self) -> None:
+    def test_remaining_switches_stay_enabled_and_retired_radar_is_absent(self) -> None:
         switches = effective_radar_switches(Settings(), args())
 
-        self.assertFalse(switches["consolidation_breakout"])
-        self.assertTrue(all(
-            enabled
-            for key, enabled in switches.items()
-            if key != "consolidation_breakout"
-        ))
+        self.assertNotIn("consolidation_breakout", switches)
+        self.assertEqual(len(switches), 5)
+        self.assertTrue(all(switches.values()))
         self.assertEqual(
             radar_runtime_flags(switches),
             {
@@ -47,10 +47,32 @@ class RadarSwitchTests(unittest.TestCase):
                 "no_summary": False,
                 "no_funding_alert": False,
                 "no_flow": False,
-                "no_consolidation_breakout": True,
                 "no_announcements": False,
             },
         )
+
+    def test_retired_command_and_options_are_rejected_before_runtime_creation(self) -> None:
+        parser = build_parser()
+        for argv in (
+            ["consolidation-breakout"],
+            ["once", "--consolidation-scan-limit", "5"],
+            ["loop", "--no-consolidation-breakout"],
+        ):
+            with self.subTest(argv=argv), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    parser.parse_args(argv)
+            self.assertEqual(error.exception.code, 2)
+
+    def test_state_inventory_excludes_retired_radar_files(self) -> None:
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            settings = Settings(base_dir=root, data_dir=root)
+            inventory = state_paths(settings)
+        self.assertTrue(inventory)
+        self.assertFalse(any("consolidation" in path.name for path in inventory))
+        self.assertIn(settings.funding_alert_state_path, inventory)
+        self.assertIn(settings.runtime_status_path, inventory)
+        self.assertIn(settings.announcement_state_path, inventory)
 
     def test_each_config_switch_is_independent(self) -> None:
         fields = {
@@ -58,7 +80,6 @@ class RadarSwitchTests(unittest.TestCase):
             "radar_summary_enable": "radar_summary",
             "funding_alert_enable": "funding_alert",
             "flow_radar_enable": "flow_radar",
-            "consolidation_breakout_enable": "consolidation_breakout",
             "announcement_risk_enable": "announcement_risk",
         }
         enabled_settings = {
@@ -83,13 +104,12 @@ class RadarSwitchTests(unittest.TestCase):
 
     def test_existing_runtime_flags_remain_stronger(self) -> None:
         switches = effective_radar_switches(
-            Settings(consolidation_breakout_enable=True),
+            Settings(),
             args(
                 no_launch=True,
                 no_announcements=True,
                 no_flow=True,
                 no_funding_alert=True,
-                no_consolidation_breakout=True,
             ),
         )
 
@@ -97,7 +117,7 @@ class RadarSwitchTests(unittest.TestCase):
         self.assertFalse(switches["announcement_risk"])
         self.assertFalse(switches["flow_radar"])
         self.assertFalse(switches["funding_alert"])
-        self.assertFalse(switches["consolidation_breakout"])
+        self.assertNotIn("consolidation_breakout", switches)
         self.assertTrue(switches["radar_summary"])
 
     def test_config_disabled_radar_is_not_reported_stale(self) -> None:

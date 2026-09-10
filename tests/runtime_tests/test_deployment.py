@@ -204,26 +204,25 @@ class EnvSyncTests(unittest.TestCase):
                 env.read_text(encoding="utf-8"),
             )
 
-    def test_sync_preserves_consolidation_breakout_topic(self) -> None:
+    def test_sync_preserves_retired_topic_value_without_advertising_it(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env.oi"
             example = Path(tmp) / ".env.oi.example"
-            env.write_text(
-                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=77\n",
-                encoding="utf-8",
-            )
-            example.write_text(
-                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=\n",
-                encoding="utf-8",
-            )
+            original = "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=77\n"
+            env.write_text(original, encoding="utf-8")
+            example.write_text("", encoding="utf-8")
 
-            module.sync_env(env, example)
+            result = module.sync_env(env, example)
 
-            self.assertIn(
-                "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID=77",
-                env.read_text(encoding="utf-8"),
-            )
+            self.assertEqual(env.read_text(encoding="utf-8"), original)
+            self.assertEqual(result["updated"], [])
+            self.assertEqual(result["removed"], [])
+        self.assertNotIn("TG_CONSOLIDATION_BREAKOUT_TOPIC_ID", module.PRESERVE_KEYS)
+        self.assertNotIn(
+            "TG_CONSOLIDATION_BREAKOUT_TOPIC_ID",
+            (ROOT / "config" / ".env.oi.example").read_text(encoding="utf-8"),
+        )
 
     def test_sync_migrates_old_launch_switch_to_pulse_and_removes_old_keys(self) -> None:
         module = load_sync_module()
@@ -296,35 +295,27 @@ class EnvSyncTests(unittest.TestCase):
         self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME=1000000", text)
         self.assertIn("SIMPLE_ALERT_MIN_QUOTE_VOLUME", result["updated"])
 
-    def test_sync_migrates_old_consolidation_defaults_to_full_market_rotation(self) -> None:
+    def test_sync_leaves_retired_consolidation_defaults_inert(self) -> None:
         module = load_sync_module()
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env.oi"
             example = Path(tmp) / ".env.oi.example"
-            env.write_text(
+            original = (
                 "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=900\n"
                 "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=24\n"
-                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=5000000\n",
-                encoding="utf-8",
+                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=5000000\n"
             )
-            example.write_text(
-                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300\n"
-                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40\n"
-                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0\n",
-                encoding="utf-8",
-            )
+            env.write_text(original, encoding="utf-8")
+            example.write_text("", encoding="utf-8")
 
             result = module.sync_env(env, example)
-            text = env.read_text(encoding="utf-8")
 
-        self.assertIn("CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300", text)
-        self.assertIn("CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40", text)
-        self.assertIn("CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0", text)
-        self.assertTrue({
-            "CONSOLIDATION_BREAKOUT_INTERVAL_SEC",
-            "CONSOLIDATION_BREAKOUT_SCAN_LIMIT",
-            "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME",
-        }.issubset(set(result["updated"])))
+            self.assertEqual(env.read_text(encoding="utf-8"), original)
+            self.assertEqual(result["updated"], [])
+            self.assertEqual(result["removed"], [])
+        self.assertFalse(any(
+            key.startswith("CONSOLIDATION_") for key in module.MANAGED_MIGRATIONS
+        ))
 
     def test_sync_preserves_custom_consolidation_rotation_values(self) -> None:
         module = load_sync_module()
@@ -337,12 +328,7 @@ class EnvSyncTests(unittest.TestCase):
                 "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=123456\n",
                 encoding="utf-8",
             )
-            example.write_text(
-                "CONSOLIDATION_BREAKOUT_INTERVAL_SEC=300\n"
-                "CONSOLIDATION_BREAKOUT_SCAN_LIMIT=40\n"
-                "CONSOLIDATION_BREAKOUT_MIN_QUOTE_VOLUME=0\n",
-                encoding="utf-8",
-            )
+            example.write_text("", encoding="utf-8")
 
             result = module.sync_env(env, example)
             text = env.read_text(encoding="utf-8")
@@ -604,7 +590,7 @@ class BotOnlyDeploymentTests(unittest.TestCase):
         self.assertIn("database-backup", command_action.choices)
         self.assertIn("pulse-review-report", command_action.choices)
         self.assertIn("telegram-topic-refresh", command_action.choices)
-        self.assertIn("consolidation-breakout", command_action.choices)
+        self.assertNotIn("consolidation-breakout", command_action.choices)
 
 
 class PulseReadinessTests(unittest.TestCase):
@@ -699,10 +685,10 @@ class PulseReadinessTests(unittest.TestCase):
             self.assertIn("资金费率警报专属话题未配置", text)
             self.assertNotIn("telegram_topic_test_message", text)
 
-    def test_consolidation_topic_is_required_only_after_opt_in(self) -> None:
+    def test_retired_consolidation_topic_does_not_affect_readiness(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            base = dict(
+            settings = Settings(
                 base_dir=root,
                 data_dir=root,
                 tg_bot_token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd",
@@ -715,23 +701,19 @@ class PulseReadinessTests(unittest.TestCase):
                 tg_topic_routes_path=root / "topic_routes.json",
             )
             store = JsonStore(root)
+            historical_routes = {
+                "routes": {"TG_CONSOLIDATION_BREAKOUT": {"topic_id": "77"}}
+            }
+            store.save(settings.tg_topic_routes_path, historical_routes)
+            before = settings.tg_topic_routes_path.read_bytes()
 
             with patch.object(main, "runtime_health_checks", return_value=[]):
-                with redirect_stdout(StringIO()) as disabled_output:
-                    disabled = main.print_readiness(Settings(**base), store)
-                with redirect_stdout(StringIO()) as enabled_output:
-                    enabled = main.print_readiness(
-                        Settings(
-                            **base,
-                            consolidation_breakout_enable=True,
-                        ),
-                        store,
-                    )
+                with redirect_stdout(StringIO()) as output:
+                    code = main.print_readiness(settings, store)
 
-            self.assertEqual(disabled, 0)
-            self.assertNotIn("盘整突破雷达专属话题", disabled_output.getvalue())
-            self.assertEqual(enabled, 1)
-            self.assertIn("盘整突破雷达专属话题", enabled_output.getvalue())
+            self.assertEqual(code, 0)
+            self.assertNotIn("盘整", output.getvalue())
+            self.assertEqual(settings.tg_topic_routes_path.read_bytes(), before)
 
 
 class MainCommandTests(unittest.TestCase):

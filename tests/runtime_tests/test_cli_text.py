@@ -23,7 +23,7 @@ class PushResultChineseTextTests(unittest.TestCase):
         )
         self.assertEqual(
             check_name_text("telegram_topic_consolidation_breakout"),
-            "盘整突破雷达专属话题",
+            "其他检查项",
         )
         self.assertEqual(check_name_text("new_internal_check"), "其他检查项")
 
