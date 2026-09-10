@@ -1,0 +1,149 @@
+{
+  "fixture_name": "cm_rejected",
+  "exchange_info": {
+    "timezone": "UTC",
+    "serverTime": 1788518400000,
+    "assets": [],
+    "exchangeFilters": [],
+    "rateLimits": [],
+    "symbols": [
+      {
+        "symbol": "AAAUSDT",
+        "pair": "AAAUSDT",
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "baseAsset": "AAA",
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "underlyingType": "COIN",
+        "underlyingSubType": [
+          "SYNTHETIC"
+        ],
+        "onboardDate": 1788432000000,
+        "deliveryDate": 4133404800000,
+        "pricePrecision": 8,
+        "quantityPrecision": 8,
+        "filters": [
+          {
+            "filterType": "PRICE_FILTER",
+            "minPrice": "0.0100",
+            "maxPrice": "100000",
+            "tickSize": "0.0100"
+          },
+          {
+            "filterType": "LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "100000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MARKET_LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "10000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MIN_NOTIONAL",
+            "notional": "5.00"
+          }
+        ]
+      },
+      {
+        "symbol": "BBBUSDT",
+        "pair": "BBBUSDT",
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "baseAsset": "BBB",
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "underlyingType": "COIN",
+        "underlyingSubType": [
+          "SYNTHETIC"
+        ],
+        "onboardDate": 1788432000000,
+        "deliveryDate": 4133404800000,
+        "pricePrecision": 8,
+        "quantityPrecision": 8,
+        "filters": [
+          {
+            "filterType": "PRICE_FILTER",
+            "minPrice": "0.0100",
+            "maxPrice": "100000",
+            "tickSize": "0.0100"
+          },
+          {
+            "filterType": "LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "100000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MARKET_LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "10000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MIN_NOTIONAL",
+            "notional": "5.00"
+          }
+        ]
+      },
+      {
+        "symbol": "1000TESTUSDT",
+        "pair": "1000TESTUSDT",
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "baseAsset": "1000TEST",
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "underlyingType": "COIN",
+        "underlyingSubType": [
+          "SYNTHETIC"
+        ],
+        "onboardDate": 1788432000000,
+        "deliveryDate": 4133404800000,
+        "pricePrecision": 8,
+        "quantityPrecision": 8,
+        "filters": [
+          {
+            "filterType": "PRICE_FILTER",
+            "minPrice": "0.0100",
+            "maxPrice": "100000",
+            "tickSize": "0.0100"
+          },
+          {
+            "filterType": "LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "100000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MARKET_LOT_SIZE",
+            "minQty": "0.100",
+            "maxQty": "10000",
+            "stepSize": "0.100"
+          },
+          {
+            "filterType": "MIN_NOTIONAL",
+            "notional": "5.00"
+          }
+        ]
+      }
+    ]
+  },
+  "payload": {
+    "e": "aggTrade",
+    "E": 1788518400100,
+    "s": "AAAUSDT",
+    "a": 101,
+    "p": "10.0100",
+    "q": "2.500",
+    "nq": "2.000",
+    "f": 1001,
+    "l": 1003,
+    "T": 1788518400090,
+    "m": false,
+    "st": 2
+  }
+}
