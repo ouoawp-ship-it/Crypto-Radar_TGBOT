@@ -17,7 +17,7 @@
 总体百分比是工程交付进度，不是生产可用率、市场效果或胜率。保留之前已报告的40%=P1A25%+P1B-I15%。此前剩余60%未逐阶段拆分，本计划首次固定为下列权重，今后不改变权重、分母或通过标准来提高数字。
 
 - P1A离线底座：25%。已合并PR #172，代码/回放/临时SQLite验收通过。
-- P1B-I离线协议与连接合同：15%。PR #173代码验收已通过；最终合并门禁为当前任务。最终合并不再次增加已有40%。
+- P1B-I离线协议与连接合同：15%。PR #173代码验收及最终合并已通过；main merge 722f7bf79f614e8e3f7eb91bc96a89740769ee08。最终合并不再次增加已有40%。
 - P1B-II公共Transport与有界Smoke：15%。阶段全部门禁通过才记分。
 - P1C恢复/保留/实时读取/服务化与长时验证：10%。阶段全部门禁通过才记分。
 - P2五类异动及三评分：12%。阶段全部门禁通过才记分。
@@ -39,18 +39,26 @@
 
 ## 分阶段任务与验收
 
-### 当前：PR #173 最终门禁
+### 已完成：PR #173 最终门禁
 
 - 分支：codex/altcoin-hunter-p1b-public-data-adapters；起始head444724461d9e27f843117cd36e47dced0b153daa；base e7622becdec46c179d97820f0769790b9a49e3af。
 - [x] 初始只读安全检查、精确head旧CI、工作区与受保护文件核验。
 - [x] 独立最终代码审查，无阻断问题；范围、连接/准入/身份/协议边界均只读复核。
-- [ ] 提交长期计划及状态文件，等待新head CI。
-- [ ] Ready后复核并Merge Commit；验证parents/main与工作区。
+- [x] 长期计划提交6525ea2d4ca738704cbaeda935388cf8318c0179；Tests run34477598486成功。
+- [x] Ready后复核并Merge Commit：722f7bf79f614e8e3f7eb91bc96a89740769ee08；parents为e7622bec...与6525ea2d...；main CI34478193348成功，工作区和80个受保护文件不变。
 
-### P1B-II：公共Transport与两级Smoke
+### 当前 P1B-II：公共Transport与两级Smoke
 
-- 计划分支：codex/altcoin-hunter-p1b-ii-public-transport。
+- 实施分支：codex/altcoin-hunter-p1b-ii-public-transport；精确起点722f7bf79f614e8e3f7eb91bc96a89740769ee08。
+- 状态：in_progress；协议文档于2026-09-10只读核对。实现及验收尚未完成，真实行情尚未连接，不计阶段分。
 - 依赖：#173已合并、main无外部漂移。
+- [x] 默认关闭的候选公共传输、独立CLI和虚拟Smoke测试。
+- [x] 新专项119/119、Windows全量1549（1533通过/16既有skip）及compile、离线CLI通过。
+- [x] Hunter专项507/507、最终diff与80个受保护文件hash检查通过。
+- [ ] 独立Draft PR与精确候选head Linux CI。
+- [ ] 首轮5币3分钟真实Smoke通过。
+- [ ] 扩展最多20币10分钟真实Smoke通过。
+- [ ] 最终报告及CI、Review门禁和阶段Merge Commit。
 - 范围：显式有限公共REST/WS Transport；复用协议、分片、ACK、epoch、REST关联及健康门禁；独立公共预算，不接旧协调DB；默认不连接；不注册主Bot。
 - Smoke前：重核Binance官方当前USDⓈ-M文档与ACK模式，显式选择INTEGER或STRING，不自动无限回退；ExchangeInfo响应记录status/Content-Length/body bytes/symbol count/解析接受拒绝；固定目录与事件单位校验。
 - 验收：全部离线测试/CI通过；5币3分钟通过后才运行最多20币10分钟；订阅全部确认，无未知路由/UM混入/限流/未解释数据丢失；全部请求有限deadline/retry/预算；记录延迟、覆盖、拒绝、epoch、控制消息、bytes、内存、输出digest。停止后连接/线程/队列无残留，生产文件hash不变。

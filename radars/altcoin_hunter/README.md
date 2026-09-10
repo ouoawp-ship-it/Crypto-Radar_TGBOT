@@ -311,3 +311,34 @@ python -B -m tests.altcoin_hunter_tests.binance_capacity
 Fixture 可内嵌 exchange_info；也可用 `--universe` 指定目录。未提供时仅使用代码中明确的虚构 AAA/BBB/1000TEST 目录，不从消息 symbol 自动创建合约。文件读取前拒绝 UNC/设备路径，Windows 同时拒绝映射网络盘及 reparse 组件。simulator 明确模拟一个选定分片，不把全市场订阅计划当成所有连接已建立。输出包含离线模式、零网络/发送、协议版本和确定性摘要；时间/内存性能测量不进入摘要。OI 容量响应是同一虚拟时刻注入的假成功响应，不能据此判断真实 REST 采样吞吐；结束时取消待办并报告清理后的队列。
 
 不提供 live/connect/smoke/daemon/send 子命令。P1B-I 不部署、不合并 PR、不启动 P1B-II。代码回滚应在新安全检查后通过评审反向提交本 PR 的变更；无需任何生产 Migration、数据库清理或服务重启。
+
+
+## P1B-II 公共传输候选（尚待本阶段验收）
+
+该阶段单独使用 `runtime.altcoin_hunter_public`。旧 `runtime.altcoin_hunter` 继续只有离线命令；Hunter领域目录继续禁止网络客户端依赖。`runtime/altcoin_hunter_transport.py` 延迟导入仓库已有的 requests/websocket-client，不新增依赖。`runtime/altcoin_hunter_smoke.py` 执行已经验证的监督器 action ledger；FakeTransport 仍是纯离线记录器，其 network_calls=0 不充当真实传输统计。
+
+首次显式授权入口：
+
+```text
+python -m runtime.altcoin_hunter_public smoke --enable-public-read
+```
+
+默认无启用标志时拒绝，不创建目录、进程或连接。首轮固定 BTCUSDT、ETHUSDT、SOLUSDT、BNBUSDT、XRPUSDT，180秒总预算；完成179秒左右时关闭，最后1秒为清理余量，父进程绝对截止覆盖启动、DNS和库内部慢读。超时终止并记失败，不视为正常通过。扩展层必须显式传 `--tier expanded --first-success-report <本机临时首轮报告>`，最多20个指定币种、600秒；digest只是完整性校验，不独立证明网络执行或授权。
+
+只读公共出口仅 `https://fapi.binance.com` 与 `wss://fstream.binance.com` 的固定公开路由；不读取生产.env、不支持凭据/任意URL/任意输出路径/DB参数、不注册Bot。输出自动进入既有本机临时目录的新 `altcoin-hunter-smoke-*` 子目录，选择临时根不使用可能写探测文件的gettempdir；拒绝仓库根、UNC、映射盘、链接/reparse与路径穿越。报告有64KiB上限；不保存原始成交，不创建任何DB。
+
+2026-09-10只读核对当前Binance官方 [REST Catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data)、[MARKET Catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market)、[PUBLIC Catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public) 和 [Connect](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect)。事件模型版本仍使用已合并的P1B-I版本；核对日期不表示已实测互通。
+
+- REST依次预检 `/fapi/v1/time`（weight1）、`/fapi/v1/exchangeInfo`（1）、`/fapi/v1/fundingInfo`（0，独立频次预算），选定instrument再调度 `/fapi/v1/openInterest`（1）。记录status、Content-Length如存在、实际body bytes、symbol数、parse accepted/rejected；目录最大8MiB与单WS消息1MB分离。完整有效目录才可发布；固定币缺失不替换。
+- MARKET每币 `<symbol>@aggTrade` 与 `<symbol>@markPrice`（默认3秒，无虚构@3s后缀）；PUBLIC每币 `<symbol>@bookTicker`。首轮分别10/5个Stream，扩展20币分别40/20；不订阅全市场数组，不把BBO宣称为深度。
+- 显式STRING ACK策略依据Catalog，保留官方Live Subscribe整数描述差异；真实拒绝立即停止，不自动改模式。st必须整数1；q包含RPI、nq不替代全量；Funding缺周期仍unknown；OI数量与名义金额分开。
+- 初始OI在WS订阅前采样，NORMAL使用300秒目标，之后每轮最多执行一条已授权REST。同一有限budget先由Scheduler reserve，再由Client消费精确RequestSpec一次性ticket；Completion才可进入REST准入，不伪装WS。关闭取消排队/在途请求和剩余ticket，不退回已耗次数。
+- 独立Smoke预算默认总请求100、滚动分钟weight120、Funding请求10；显式截止，不是生产共享IP Coordinator。响应IP weight可触发保守停止；429/418、其他非200、超时、协议/数据质量问题立即失败，不自动重试。这里的有限预算不能证明同IP其他程序的占用。
+- 所有实际订阅和PONG都经过8条/秒控制保护。PING原始bytes经有界opaque token桥回送，不假设UTF8；WS消息/fragment有限，长度在读取payload前检查。未知无害字段兼容计数，重复JSON key不允许。
+- 两路先完成握手再发订阅，避免第二路握手耗掉第一路ACK期限。ACTIVE必须来自真实ACK；解析、身份、去重、顺序与质量验证通过后才更新good-frame，异常Coverage退至此前good证据。首尾部分分钟不补零；失败运行的导出区间一律不作为完整分析输入。
+
+预先固定Smoke候选门禁：固定币三类WS流均ACK/有事件，OI均有当前Scheduler回执；至少总时长减30秒的ACTIVE观察；Mark/Funding最大10秒无更新，成交/BBO最大30秒无更新；接收事件延迟[-2000,5000]ms、服务器时钟偏差估计不超过500ms；无未解释aggTrade ID/f/l缺口、parser/admission拒绝、dedup历史淘汰、限流或控制丢失。单次完整WS消息payload累计64MiB、Python allocation峰值256MiB、去重键200000，任一超限停止；它们是保守工程上限，不是市场校准或生产容量结论。
+
+报告区分物理帧与完整消息、HTTP/DNS/TCP实际尝试、控制峰值、真实ACK/epoch区间、入站事件延迟、typed-event计数、未知metadata引用及增量digest。metadata未知字段引用可能因Mark/Funding两事件出现两次，不称作原始字段数量。运行时延迟和Coverage来自观测，不把离线吞吐称实网吞吐。
+
+本阶段不实施恢复服务、生产保留策略、评分/信号/状态/Outcome、Telegram/Web、旧雷达接入；后续依赖见根PLANS。人工上线只在后续独立确认后进行；本阶段回滚只需退出公共CLI、保留诊断并回到之前已验收代码，不操作任何旧数据库或服务。

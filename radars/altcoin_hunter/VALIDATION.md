@@ -232,3 +232,12 @@ Hunter专项、三个实际CLI、离线容量：外部网络尝试0、DNS0、HTT
 只向原分支追加一个hardening提交并更新原Draft PR #173；不重写初版历史，不转Ready、不合并。停止离线命令即可停止本域；代码回滚须重新安全检查后以新提交反向回退该hardening提交，不重写公开历史。没有生产部署，因此不需要服务重启、数据库迁移/删除或生产配置回滚。
 
 未实施真实Transport/共享生产Coordinator、DNS/HTTP/WS公开行情、ExchangeInfo真实大小预检、Smoke/长期soak、Web/Telegram/链上、信号/评分/策略状态机/Outcome、生产服务或自动交易。ACK互通模式、真实载荷大小、共享IP预算与长期容量仍待另行P1B-II/P1C验证。稳定窗口与tombstone是可配置工程默认值，尚无生产时延校准。Completion关联是有界进程内合同，不是跨进程持久凭证；新adapter调用者须显式传目录limit和当前身份代，不能依赖历史默认值。
+
+
+## P1B-II 公共传输候选验证记录（2026-09-10）
+
+精确起点：722f7bf79f614e8e3f7eb91bc96a89740769ee08（PR #173 Merge Commit）。分支codex/altcoin-hunter-p1b-ii-public-transport。主分支CI34478193348已success。固定阶段权重15分，目前未通过、不计入既有40分。
+
+本阶段新增公共传输、临时路径、两级Smoke policy、独立CLI/watchdog及虚拟连接集成测试；旧P1A/P1B-I测试和断言保持原样。静态复核已覆盖预算一次扣除、opaque ping、重复JSON key、截止、Coverage截断、Scheduler时钟单调及关闭清理。真实网络尚未执行。新增公共专项119/119通过（8.754s）；全量1549执行、1533通过、16原有Windows平台skip、0失败（290.270s）；compile通过（1.711s）。原三类离线CLI、新公共help及默认关闭行为通过。Hunter专项507/507通过（176.493s，0skip/0失败）；Linux CI尚待提交触发。
+
+隔离证据：新增公共专项和CLI的网络/DNS/Telegram/生产写入为0；完整旧测试过程有6次被拦截的urllib3本机IPv6 bind能力探测，未产生外部网络或DNS。不得把该6次本地bind尝试误报为外部行情调用或隐去。任何测试失败都按用户门禁停止等待人工，不能自动修复后掩盖首次失败。
